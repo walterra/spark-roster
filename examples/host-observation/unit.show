@@ -1,0 +1,7 @@
+LoadState=loaded
+ActiveState=active
+UnitFileState=enabled
+MemoryCurrent=34359738368
+MemoryMax=infinity
+Environment=API_KEY=synthetic-secret-do-not-emit
+ExecStart={ path=/opt/example ; argv[]=/opt/example --key synthetic-secret-do-not-emit ; }

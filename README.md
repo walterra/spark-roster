@@ -4,7 +4,7 @@ Manage the models that share your Spark.
 
 SparkRoster is an early-stage project for managing inference services on NVIDIA DGX Spark and other GB10 systems, including the ASUS Ascent GX10. The goal is to run chat and coding LLMs, decision models, and embedding services together when unified memory allows, without replacing the runtimes or observability tools already in use.
 
-**Status:** The offline memory planner is implemented. Live host discovery and deployment automation are not implemented yet.
+**Status:** The offline memory planner is implemented. Read-only Linux memory and systemd inspection prototypes have been tested with synthetic inputs. Live GX10 validation and deployment automation are pending.
 
 ## Planned workflow
 
@@ -16,6 +16,18 @@ SparkRoster is an early-stage project for managing inference services on NVIDIA 
 ## Adoption: capture an existing setup
 
 A planned read-only workflow will inspect a selected systemd workload and draft a portable profile from what is already deployed. Capture model and runtime pins, launch settings, memory limits, and readiness and telemetry references. Keep host-specific paths configurable, omit credentials, and flag anything that needs manual input or measurement rather than guessing. Review the draft before adding it to Git. Inspection must not restart or take ownership of the service. A profile is not verified reproducible until its pins and configuration have been validated in a separate deployment test.
+
+Try the prototypes without Linux or systemd using the synthetic fixtures:
+
+```bash
+go run ./cmd/spark-roster memory --meminfo examples/host-observation/meminfo.txt --json
+go run ./cmd/spark-roster inspect --unit example.service --from-show examples/host-observation/unit.show --json
+go run ./cmd/spark-roster profile draft --unit example.service --from-show examples/host-observation/unit.show --json
+```
+
+Omit `--meminfo` to read local Linux `/proc/meminfo`; omit `--from-show` to query the selected local unit through `systemctl show`. Neither command starts or stops anything. Memory observations include `MemAvailable` and separate swap counters. They are **not** planner snapshots: the running service inventory and its memory bounds still need to be collected. A file replay reports the read time, not proof of the original capture time.
+
+The systemd prototype only collects allowlisted unit states and cgroup memory fields. It does not export launch commands or environment variables. The draft references the existing unit and lists what still needs review, including pins, runtime configuration, readiness, telemetry, and memory peaks. It is not yet a runnable profile. Cgroup counters are not validated GPU-memory totals; a unit-level unlimited setting does not rule out parent limits.
 
 ## Planner input example
 

@@ -17,10 +17,25 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, time.Now())) }
 
 func run(args []string, out, diag io.Writer, now time.Time) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(out, "Usage: spark-roster plan --catalog FILE --deployment-set FILE --snapshot FILE [--as-of RFC3339] [--json]")
+		fmt.Fprintln(out, "Usage: spark-roster <plan|memory|inspect|profile draft> [options]\nUse <command> --help for options.")
 		return 0
 	}
-	if args[0] != "plan" {
+	switch args[0] {
+	case "memory":
+		return runMemory(args[1:], out, diag, now)
+	case "inspect":
+		return runUnit(args[1:], out, diag, false)
+	case "profile":
+		if len(args) > 1 && args[1] == "draft" {
+			return runUnit(args[2:], out, diag, true)
+		}
+		fmt.Fprintln(diag, "Usage: spark-roster profile draft --unit NAME [--from-show FILE] [--json]")
+		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
+			return 0
+		}
+		return 2
+	case "plan":
+	default:
 		fmt.Fprintf(diag, "error: unknown command %q\n", args[0])
 		return 2
 	}
