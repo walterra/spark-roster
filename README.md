@@ -4,7 +4,7 @@ Manage the models that share your Spark.
 
 SparkRoster is an early-stage project for managing inference services on NVIDIA DGX Spark and other GB10 systems, including the ASUS Ascent GX10. The goal is to run chat and coding LLMs, decision models, and embedding services together when unified memory allows, without replacing the runtimes or observability tools already in use.
 
-**Status:** Design only. No CLI or deployment automation is implemented yet.
+**Status:** The offline memory planner is implemented. Live host discovery and deployment automation are not implemented yet.
 
 ## Planned workflow
 
@@ -19,7 +19,21 @@ A planned read-only workflow will inspect a selected systemd workload and draft 
 
 ## Planner input example
 
-The [v1 input schema](schema/planning-v1.schema.json) describes the catalog, desired deployment set, and host snapshot. The [coding replacement fixture](examples/coding-replacement/) uses synthetic measurements to show how embeddings and decisions can stay online while the coding model is replaced. After reserve, the example leaves **−24 GiB** during overlap and **+10 GiB** if the old coding model stops first. These are fixture calculations, not live GB10 results or CLI output.
+The [v1 input schema](schema/planning-v1.schema.json) describes the catalog, desired deployment set, and host snapshot. The [coding replacement fixture](examples/coding-replacement/) uses synthetic measurements to show how embeddings and decisions can stay online while the coding model is replaced. After reserve, the example leaves **−24 GiB** during overlap and **+10 GiB** if the old coding model stops first. These are synthetic inputs, not live GB10 measurements.
+
+Run from the repository root with Go 1.23 or newer:
+
+```bash
+go run ./cmd/spark-roster plan \
+  --catalog examples/coding-replacement/catalog.json \
+  --deployment-set examples/coding-replacement/deployment-set.json \
+  --snapshot examples/coding-replacement/host-snapshot.json \
+  --as-of 2026-11-22T12:00:00Z
+```
+
+Add `--json` for a versioned result on stdout. All completed verdicts exit `0`; invalid input exits `1`, and invalid CLI usage exits `2`. Diagnostics go to stderr. `--as-of` is for replaying historical snapshots. Without it, the planner uses the current time; snapshots older than five minutes and launch measurements older than 30 days are not trusted.
+
+The planner budgets additions and replacements. It leaves unlisted services in place, sums launch peaks conservatively, and does not credit reclaimed memory on the overlap path. For multiple stops, supply non-overlapping reclaim bounds. Rollback budgeting, live probes, runtime-specific limits, and applying plans are outside this offline implementation.
 
 All memory values are integer bytes. Additional growth is relative to the snapshot, not the service's full resident footprint. A stop-reclaim lower bound estimates how much *additional available memory* a stop may yield; recheck after stopping before trusting it. Missing memory evidence is unknown, not zero. Change the profile ID when changing settings or pins that affect the measured budget.
 
