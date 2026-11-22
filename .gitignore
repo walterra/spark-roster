@@ -1,0 +1,14 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local.yaml
+*.local.yml
+
+# Local tooling and build artifacts
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
