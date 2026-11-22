@@ -18,10 +18,14 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, time.Now())) }
 
 func run(args []string, out, diag io.Writer, now time.Time) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(out, "Usage: spark-roster <plan|snapshot|memory|storage|inspect|profile draft> [options]\nUse <command> --help for options.")
+		fmt.Fprintln(out, "Usage: spark-roster <plan|snapshot|memory|storage|inspect|profile draft|pi-q8|inkling> [options]\nUse <command> --help for options.")
 		return 0
 	}
 	switch args[0] {
+	case "inkling":
+		return runInkling(args[1:], out, diag)
+	case "pi-q8":
+		return runPiQ8(args[1:], out, diag)
 	case "snapshot":
 		return runSnapshot(args[1:], out, diag, host.InspectUnit, localMemory)
 	case "memory":

@@ -13,6 +13,16 @@ SparkRoster is an early-stage project for managing inference services on NVIDIA 
 3. Run a read-only plan before deploying or updating. Check live unified-memory headroom against expected demand during startup, warm-up, and steady state.
 4. Apply an approved plan, verify readiness, and restore the previous deployment if the candidate fails. Keep observability running during the change.
 
+## Operator interface roadmap
+
+Build the terminal app before the web console. The proposed `spark-roster tui` runs on the Spark, including over an SSH terminal, and gives operators one place to monitor the host and manage inference workloads.
+
+- Monitor live RAM headroom, disk space, GPU temperature and clocks, and workload readiness. Show stale or unavailable data explicitly; link to Kibana for historical analysis without making Elastic a dependency for local status.
+- Preview workload changes and memory forecasts, confirm the exact plan, follow progress, and verify recovery. Keep model operations separate from host policies such as the GPU clock cap.
+- Share planning, execution, and inspection code with the existing non-interactive CLI. Preserve structured JSON for scripts and agents; do not require terminal scraping or add a separate control plane for the TUI.
+
+First deliverable: view live host and workload status and preview a plan without writes. Add switch and restore controls once they use the same verified lifecycle operations as the CLI. Defer the web console until the terminal workflow is proven.
+
 ## Adoption: capture an existing setup
 
 A planned read-only workflow will inspect a selected systemd workload and draft a portable profile from what is already deployed. Capture model and runtime pins, launch settings, memory limits, and readiness and telemetry references. Keep host-specific paths configurable, omit credentials, and flag anything that needs manual input or measurement rather than guessing. Review the draft before adding it to Git. Inspection must not restart or take ownership of the service. A profile is not verified reproducible until its pins and configuration have been validated in a separate deployment test.
