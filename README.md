@@ -29,6 +29,22 @@ Omit `--meminfo` to read local Linux `/proc/meminfo`; omit `--from-show` to quer
 
 The systemd prototype only collects allowlisted unit states and cgroup memory fields. It does not export launch commands or environment variables. The draft references the existing unit and lists what still needs review, including pins, runtime configuration, readiness, telemetry, and memory peaks. It is not yet a runnable profile. Cgroup counters are not validated GPU-memory totals; a unit-level unlimited setting does not rule out parent limits.
 
+## Plan from a live host observation
+
+On Linux, run `spark-roster snapshot --inventory inventory.json > snapshot.json`, then pass that file to `spark-roster plan --snapshot snapshot.json` with the catalog and desired deployment set. A v1 inventory looks like:
+
+```json
+{
+  "schema_version": 1,
+  "kind": "systemd_inventory",
+  "services": {
+    "coding": {"profile_id": "stock-coding-v1", "units": ["engine.service", "proxy.service"]}
+  }
+}
+```
+
+List every managed workload expected to be running and all units needed for each workload. Capture checks that those units are loaded and active, then reads host memory. It refuses disagreement rather than dropping a partially active workload. The inventory is an operator-reviewed mapping, not auto-discovery or proof of artifact identity. The snapshot contains no growth or reclaim bounds: unit state and cgroup counters cannot establish them. Expect `unknown` when those bounds are needed. Neither command mutates workloads.
+
 ## Storage preflight
 
 On Linux, `spark-roster storage --path <existing-directory> --json` reports the capacity and available bytes of the filesystem containing that directory. Omit `--json` for GiB output. Check the intended archive filesystem, not just `/`. Available bytes exclude reserved blocks but do not account for quotas or concurrent writes. The command does not create directories, reserve space, or export images.
