@@ -29,6 +29,10 @@ Omit `--meminfo` to read local Linux `/proc/meminfo`; omit `--from-show` to quer
 
 The systemd prototype only collects allowlisted unit states and cgroup memory fields. It does not export launch commands or environment variables. The draft references the existing unit and lists what still needs review, including pins, runtime configuration, readiness, telemetry, and memory peaks. It is not yet a runnable profile. Cgroup counters are not validated GPU-memory totals; a unit-level unlimited setting does not rule out parent limits.
 
+## Storage preflight
+
+On Linux, `spark-roster storage --path <existing-directory> --json` reports the capacity and available bytes of the filesystem containing that directory. Omit `--json` for GiB output. Check the intended archive filesystem, not just `/`. Available bytes exclude reserved blocks but do not account for quotas or concurrent writes. The command does not create directories, reserve space, or export images.
+
 ## Planner input example
 
 The [v1 input schema](schema/planning-v1.schema.json) describes the catalog, desired deployment set, and host snapshot. The [coding replacement fixture](examples/coding-replacement/) uses synthetic measurements to show how embeddings and decisions can stay online while the coding model is replaced. After reserve, the example leaves **−24 GiB** during overlap and **+10 GiB** if the old coding model stops first. These are synthetic inputs, not live GB10 measurements.

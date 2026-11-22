@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/walterra/spark-roster/internal/host"
 	"github.com/walterra/spark-roster/internal/planner"
 )
 
@@ -17,12 +18,14 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, time.Now())) }
 
 func run(args []string, out, diag io.Writer, now time.Time) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(out, "Usage: spark-roster <plan|memory|inspect|profile draft> [options]\nUse <command> --help for options.")
+		fmt.Fprintln(out, "Usage: spark-roster <plan|memory|storage|inspect|profile draft> [options]\nUse <command> --help for options.")
 		return 0
 	}
 	switch args[0] {
 	case "memory":
 		return runMemory(args[1:], out, diag, now)
+	case "storage":
+		return runStorage(args[1:], out, diag, host.ReadStorage)
 	case "inspect":
 		return runUnit(args[1:], out, diag, false)
 	case "profile":
