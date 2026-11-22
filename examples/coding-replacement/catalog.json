@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "kind": "catalog",
+  "profiles": {
+    "stock-coding-v1": {
+      "model": {
+        "name": "stock-coding",
+        "revision": "fixture-v1"
+      },
+      "runtime": {
+        "name": "sglang",
+        "revision": "fixture-v1"
+      },
+      "concurrency": 1,
+      "context_tokens": 32768,
+      "memory": {
+        "startup_peak_bytes": 44023414784,
+        "steady_peak_bytes": 40802189312,
+        "evidence": "measured",
+        "recorded_at": "2026-11-22T12:00:00Z",
+        "note": "Synthetic measurement for this example, not hardware evidence."
+      }
+    },
+    "candidate-coding-v1": {
+      "model": {
+        "name": "candidate-coding",
+        "revision": "fixture-v1"
+      },
+      "runtime": {
+        "name": "llama.cpp",
+        "revision": "fixture-v1"
+      },
+      "concurrency": 1,
+      "context_tokens": 32768,
+      "memory": {
+        "startup_peak_bytes": 38654705664,
+        "steady_peak_bytes": 32212254720,
+        "evidence": "measured",
+        "recorded_at": "2026-11-22T12:00:00Z",
+        "note": "Synthetic measurement for this example, not hardware evidence."
+      }
+    },
+    "embeddings-v1": {
+      "model": {
+        "name": "embedding-model",
+        "revision": "fixture-v1"
+      },
+      "runtime": {
+        "name": "embedding-server",
+        "revision": "fixture-v1"
+      },
+      "concurrency": 4,
+      "memory": {
+        "startup_peak_bytes": 8589934592,
+        "steady_peak_bytes": 8589934592,
+        "evidence": "measured",
+        "recorded_at": "2026-11-22T12:00:00Z",
+        "note": "Synthetic measurement for this example, not hardware evidence."
+      }
+    },
+    "decisions-v1": {
+      "model": {
+        "name": "decision-model",
+        "revision": "fixture-v1"
+      },
+      "runtime": {
+        "name": "decision-server",
+        "revision": "fixture-v1"
+      },
+      "concurrency": 2,
+      "memory": {
+        "startup_peak_bytes": 6442450944,
+        "steady_peak_bytes": 6442450944,
+        "evidence": "measured",
+        "recorded_at": "2026-11-22T12:00:00Z",
+        "note": "Synthetic measurement for this example, not hardware evidence."
+      }
+    }
+  }
+}

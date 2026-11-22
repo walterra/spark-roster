@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "kind": "deployment_set",
+  "id": "coding-replacement",
+  "services": {
+    "coding": "candidate-coding-v1",
+    "embeddings": "embeddings-v1",
+    "decisions": "decisions-v1"
+  },
+  "protected_services": [
+    "embeddings",
+    "decisions"
+  ],
+  "reserve_bytes": 10737418240
+}

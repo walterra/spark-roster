@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "kind": "host_snapshot",
+  "captured_at": "2026-11-22T12:00:00Z",
+  "total_bytes": 129922760704,
+  "available_bytes": 30064771072,
+  "running_services": {
+    "coding": {
+      "profile_id": "stock-coding-v1",
+      "additional_growth_upper_bound_bytes": 0,
+      "stop_reclaim_lower_bound_bytes": 36507222016
+    },
+    "embeddings": {
+      "profile_id": "embeddings-v1",
+      "additional_growth_upper_bound_bytes": 4294967296
+    },
+    "decisions": {
+      "profile_id": "decisions-v1",
+      "additional_growth_upper_bound_bytes": 2147483648
+    }
+  }
+}

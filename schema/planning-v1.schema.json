@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SparkRoster planning inputs v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/catalog"
+    },
+    {
+      "$ref": "#/$defs/deployment_set"
+    },
+    {
+      "$ref": "#/$defs/host_snapshot"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "revision"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "runtime",
+        "concurrency"
+      ],
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/revision"
+        },
+        "runtime": {
+          "$ref": "#/$defs/revision"
+        },
+        "drafter": {
+          "$ref": "#/$defs/revision"
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "context_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "startup_peak_bytes",
+            "steady_peak_bytes",
+            "evidence",
+            "recorded_at",
+            "note"
+          ],
+          "properties": {
+            "startup_peak_bytes": {
+              "$ref": "#/$defs/bytes"
+            },
+            "steady_peak_bytes": {
+              "$ref": "#/$defs/bytes"
+            },
+            "evidence": {
+              "enum": [
+                "measured",
+                "estimated"
+              ]
+            },
+            "recorded_at": {
+              "$ref": "#/$defs/timestamp"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "running_service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id"
+      ],
+      "properties": {
+        "profile_id": {
+          "$ref": "#/$defs/id"
+        },
+        "additional_growth_upper_bound_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "stop_reclaim_lower_bound_bytes": {
+          "$ref": "#/$defs/bytes"
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "profiles"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "catalog"
+        },
+        "profiles": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/profile"
+          }
+        }
+      }
+    },
+    "deployment_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "id",
+        "services",
+        "protected_services",
+        "reserve_bytes"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "deployment_set"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "services": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "protected_services": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "reserve_bytes": {
+          "$ref": "#/$defs/bytes"
+        }
+      }
+    },
+    "host_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "captured_at",
+        "total_bytes",
+        "available_bytes",
+        "running_services"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "host_snapshot"
+        },
+        "captured_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "total_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "available_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "running_services": {
+          "type": "object",
+          "minProperties": 0,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/running_service"
+          }
+        }
+      }
+    }
+  }
+}

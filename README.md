@@ -13,6 +13,16 @@ SparkRoster is an early-stage project for managing inference services on NVIDIA 
 3. Run a read-only plan before deploying or updating. Check live unified-memory headroom against expected demand during startup, warm-up, and steady state.
 4. Apply an approved plan, verify readiness, and restore the previous deployment if the candidate fails. Keep observability running during the change.
 
+## Adoption: capture an existing setup
+
+A planned read-only workflow will inspect a selected systemd workload and draft a portable profile from what is already deployed. Capture model and runtime pins, launch settings, memory limits, and readiness and telemetry references. Keep host-specific paths configurable, omit credentials, and flag anything that needs manual input or measurement rather than guessing. Review the draft before adding it to Git. Inspection must not restart or take ownership of the service. A profile is not verified reproducible until its pins and configuration have been validated in a separate deployment test.
+
+## Planner input example
+
+The [v1 input schema](schema/planning-v1.schema.json) describes the catalog, desired deployment set, and host snapshot. The [coding replacement fixture](examples/coding-replacement/) uses synthetic measurements to show how embeddings and decisions can stay online while the coding model is replaced. After reserve, the example leaves **−24 GiB** during overlap and **+10 GiB** if the old coding model stops first. These are fixture calculations, not live GB10 results or CLI output.
+
+All memory values are integer bytes. Additional growth is relative to the snapshot, not the service's full resident footprint. A stop-reclaim lower bound estimates how much *additional available memory* a stop may yield; recheck after stopping before trusting it. Missing memory evidence is unknown, not zero. Change the profile ID when changing settings or pins that affect the measured budget.
+
 ## Memory planning
 
 A plan should report **fit**, **stop-first**, **insufficient**, or **unknown**. An update that fits after the old model stops may still exceed memory if both versions load at once. The planner should show that difference, account for growth of services that stay online, and recheck headroom before loading new weights.
