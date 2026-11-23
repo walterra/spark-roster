@@ -45,6 +45,24 @@ func command(ctx context.Context, dst io.Writer, dir, name string, args ...strin
 	return nil
 }
 
+func operatorForHome(home string) (*user.User, error) {
+	if os.Geteuid() == 0 {
+		u, err := user.Lookup(filepath.Base(home))
+		if err != nil || u.HomeDir != home || u.Uid == "0" {
+			return nil, fmt.Errorf("invalid benchmark operator home")
+		}
+		return u, nil
+	}
+	return user.Current()
+}
+
+func authorizeTrial(ctx context.Context, out io.Writer) error {
+	if os.Geteuid() == 0 {
+		return nil
+	}
+	return command(ctx, out, "", "sudo", "-v")
+}
+
 func output(ctx context.Context, name string, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, name, args...).Output()
 	if err != nil {
@@ -143,7 +161,7 @@ func runPiQ8(args []string, out, diag io.Writer) int {
 	case "stage":
 		err = stagePiQ8(ctx, base, out)
 	case "switch":
-		err = switchPiQ8(ctx, home, base, out)
+		err = switchPiQ8(ctx, home, base, 2*time.Hour, out)
 	case "restore":
 		err = restorePiQ8(ctx, home, out)
 	case "status":
@@ -362,8 +380,8 @@ func restoreAuthorized(ctx context.Context, home string, out io.Writer) error {
 	fmt.Fprintln(out, "Stock Qwen restored; authenticated generation verified.")
 	return nil
 }
-func switchPiQ8(ctx context.Context, home, base string, out io.Writer) (err error) {
-	u, e := user.Current()
+func switchPiQ8(ctx context.Context, home, base string, lifetime time.Duration, out io.Writer) (err error) {
+	u, e := operatorForHome(home)
 	if e != nil {
 		return e
 	}
@@ -389,7 +407,7 @@ func switchPiQ8(ctx context.Context, home, base string, out io.Writer) (err erro
 	if e != nil {
 		return fmt.Errorf("stock restore preflight: %w", e)
 	}
-	if e = command(ctx, out, "", "sudo", "-v"); e != nil {
+	if e = authorizeTrial(ctx, out); e != nil {
 		return e
 	}
 	defer func() {
@@ -416,7 +434,7 @@ func switchPiQ8(ctx context.Context, home, base string, out io.Writer) (err erro
 	if e := requireRAM(65 * trialGiB); e != nil {
 		return e
 	}
-	if e := command(ctx, out, "", "sudo", "-n", "systemd-run", "--unit="+piUnit, "--uid="+u.Uid, "--gid="+u.Gid, "--property=MemoryMax=48G", "--property=MemorySwapMax=0", "--property=RuntimeMaxSec=2h", "--property=KillMode=control-group", "--property=Type=exec", "--", exe, "--model", weights, "--alias", "qwen3.8-pi", "--host", "127.0.0.1", "--port", "9931", "--ctx-size", "32768", "--parallel", "1", "--gpu-layers", "all", "--jinja", "--reasoning", "off"); e != nil {
+	if e := command(ctx, out, "", "sudo", "-n", "systemd-run", "--unit="+piUnit, "--uid="+u.Uid, "--gid="+u.Gid, "--property=MemoryMax=48G", "--property=MemorySwapMax=0", fmt.Sprintf("--property=RuntimeMaxSec=%ds", int64(lifetime/time.Second)), "--property=KillMode=control-group", "--property=Type=exec", "--", exe, "--model", weights, "--alias", "qwen3.8-pi", "--host", "127.0.0.1", "--port", "9931", "--ctx-size", "32768", "--parallel", "1", "--gpu-layers", "all", "--jinja", "--reasoning", "off"); e != nil {
 		return e
 	}
 	startup, stop := context.WithTimeout(ctx, 4*time.Minute)
@@ -424,6 +442,6 @@ func switchPiQ8(ctx context.Context, home, base string, out io.Writer) (err erro
 	if e := waitGeneration(startup, func(p context.Context) error { return trial.CheckGeneration(p, piPort, "qwen3.8-pi", "") }, 10*trialGiB); e != nil {
 		return e
 	}
-	fmt.Fprintln(out, "Pi Q8 generation verified at http://127.0.0.1:9931/v1 (model qwen3.8-pi). Stock Qwen stopped. Run pi-q8 restore when finished; candidate expires after 2h but expiry does not restore stock.")
+	fmt.Fprintf(out, "Pi Q8 generation verified at http://127.0.0.1:9931/v1 (model qwen3.8-pi). Stock Qwen stopped. Candidate lifetime: %s. Expiry alone does not restore stock.\n", lifetime)
 	return nil
 }

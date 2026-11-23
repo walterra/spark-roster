@@ -13,6 +13,10 @@ SparkRoster is an early-stage project for managing inference services on NVIDIA 
 3. Run a read-only plan before deploying or updating. Check live unified-memory headroom against expected demand during startup, warm-up, and steady state.
 4. Apply an approved plan, verify readiness, and restore the previous deployment if the candidate fails. Keep observability running during the change.
 
+## Three-profile Pi benchmark
+
+`benchmark stage` builds the locked ARM64 Pi runner image. `benchmark preflight` verifies the staged profiles and stock baseline; `benchmark check` exercises stock streaming and one real Pi task without switching services. A systemd-hosted `benchmark run` runs cold-intended/warm-repeat streaming probes and eight test-graded Pi tasks (three attempts per task) on each of stock Qwen, Pi Q8, and Inkling. Use `benchmark report` for a scorecard or `benchmark status` for per-attempt JSON. Run only with the site runbook's root-owned binary and `ExecStopPost` recovery hook. The hook confirms candidate exit and verifies stock generation; Elastic ingestion requires a separate check. This fixed-profile suite is not a general deployment engine or boot-time recovery service.
+
 ## Operator interface roadmap
 
 Build the terminal app before the web console. The proposed `spark-roster tui` runs on the Spark, including over an SSH terminal, and gives operators one place to monitor the host and manage inference workloads.
@@ -20,6 +24,8 @@ Build the terminal app before the web console. The proposed `spark-roster tui` r
 - Monitor live RAM headroom, disk space, GPU temperature and clocks, and workload readiness. Show stale or unavailable data explicitly; link to Kibana for historical analysis without making Elastic a dependency for local status.
 - Preview workload changes and memory forecasts, confirm the exact plan, follow progress, and verify recovery. Keep model operations separate from host policies such as the GPU clock cap.
 - Share planning, execution, and inspection code with the existing non-interactive CLI. Preserve structured JSON for scripts and agents; do not require terminal scraping or add a separate control plane for the TUI.
+
+Design reference: EXO’s dark, monospaced console. Borrow its restrained accent color, compact resource gauges with numeric readouts, and clear separation of live hardware, model details, and actions. In SparkRoster, make unified RAM headroom, GPU telemetry, active deployment, and staged models readable at a glance. Keep plan verdicts, switch progress, and restore state visible where operators act. Use explicit status labels so color is never the only signal. The reference sets the bar for polish, not a requirement to add chat or multi-host topology.
 
 First deliverable: view live host and workload status and preview a plan without writes. Add switch and restore controls once they use the same verified lifecycle operations as the CLI. Defer the web console until the terminal workflow is proven.
 

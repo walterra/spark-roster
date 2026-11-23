@@ -25,6 +25,7 @@ const (
 	inklingName     = "spark-roster-inkling-mini"
 	inklingModel    = "inkling-2-mini"
 	inklingPort     = 9932
+	stockImage      = "sha256:25c2f6220187a810411d93ad8a3f04ee3ed954c1bee9c62317a585794b177a3d"
 	inklingLabel    = "io.spark-roster.trial=inkling-2-mini"
 )
 
@@ -240,12 +241,11 @@ func switchInkling(ctx context.Context, home, base string, out io.Writer) (err e
 	if err != nil {
 		return fmt.Errorf("stock generation preflight: %w", err)
 	}
-	const stockImage = "sha256:25c2f6220187a810411d93ad8a3f04ee3ed954c1bee9c62317a585794b177a3d"
 	image, err := output(ctx, "docker", "container", "inspect", "--format", "{{.Image}} {{.State.Running}}", "qwen38-sglang")
 	if err != nil || image != stockImage+" true" {
 		return fmt.Errorf("stock restore image does not match verified baseline")
 	}
-	if err = command(ctx, out, "", "sudo", "-v"); err != nil {
+	if err = authorizeTrial(ctx, out); err != nil {
 		return err
 	}
 	defer func() {
