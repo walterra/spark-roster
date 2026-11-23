@@ -55,7 +55,7 @@ var benchUsername = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,63}$`)
 
 func runBenchmark(args []string, out, diag io.Writer) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(out, "Usage: spark-roster benchmark stage|preflight|check|status|report|run OPERATOR|recover OPERATOR|qualify-preflight|qualify OPERATOR|qualify-status|qualify-recover OPERATOR")
+		fmt.Fprintln(out, "Usage: spark-roster benchmark stage|selftest|preflight|check|status|report|run OPERATOR|recover OPERATOR|qualify-preflight|qualify OPERATOR|qualify-status|qualify-recover OPERATOR")
 		return 0
 	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" {
@@ -69,6 +69,16 @@ func runBenchmark(args []string, out, diag io.Writer) int {
 	}
 	var err error
 	switch {
+	case len(args) == 1 && args[0] == "selftest" && os.Geteuid() != 0:
+		// Same lock as run/check: selftest shares the benchmark container name and
+		// cleanup label, so it must never overlap a real run.
+		var home string
+		home, err = os.UserHomeDir()
+		if err == nil {
+			self, stop := context.WithTimeout(ctx, 10*time.Minute)
+			defer stop()
+			err = withBenchLock(home, func() error { return runSelftest(self, out) })
+		}
 	case len(args) == 1 && args[0] == "telemetry-check":
 		err = checkBenchTelemetry(ctx, out)
 	case len(args) == 1 && args[0] == "stage" && os.Geteuid() != 0:

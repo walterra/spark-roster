@@ -2,18 +2,30 @@ const http = require('node:http');
 const {spawn} = require('node:child_process');
 const fs = require('node:fs');
 
-async function agent(model, prompt, window = 32768, maxTokens = 4096, attachment, timeoutMs) {
+// startRelay exposes the host's inference socket as a local HTTP port for Pi.
+// A response that dies after its headers must reach Pi as an error. Ending the
+// response instead makes a truncated stream indistinguishable from a finished one.
+function startRelay(socketPath, port) {
   const relay = http.createServer((req, res) => {
-    const upstream = http.request({socketPath:'/relay/inference.sock', path:req.url, method:req.method,
-      headers:{'content-type':'application/json'}}, response => {
-      res.writeHead(response.statusCode, {'content-type':response.headers['content-type'] || 'application/json'});
+    const upstream = http.request({socketPath, path: req.url, method: req.method,
+      headers: {'content-type': 'application/json'}}, response => {
+      res.writeHead(response.statusCode, {'content-type': response.headers['content-type'] || 'application/json'});
       response.pipe(res);
+      response.on('error', () => res.destroy());
+      response.on('close', () => { if (!response.complete) res.destroy(); });
     });
-    upstream.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+    upstream.on('error', () => {
+      if (res.headersSent) { res.destroy(); return; }
+      res.writeHead(502); res.end();
+    });
     res.on('close', () => upstream.destroy());
     req.pipe(upstream);
   });
-  await new Promise((resolve, reject) => relay.on('error', reject).listen(18765, '127.0.0.1', resolve));
+  return new Promise((resolve, reject) => relay.on('error', reject).listen(port, '127.0.0.1', () => resolve(relay)));
+}
+
+async function agent(model, prompt, window = 32768, maxTokens = 4096, attachment, timeoutMs) {
+  const relay = await startRelay('/relay/inference.sock', 18765);
   fs.mkdirSync('/tmp/pi', {mode:0o700});
   if (timeoutMs) {
     const timeout = Number(timeoutMs);
@@ -47,6 +59,9 @@ async function grade() {
   emitResult(JSON.stringify(results)+'\n');
 }
 
-if (process.argv[2] === 'agent') agent(process.argv[3], process.argv[4], process.argv[5], process.argv[6], process.argv[7], process.argv[8]).catch(() => {process.exitCode=1;});
-else if (process.argv[2] === 'grade') grade().catch(err => {console.error(err.message); process.exitCode=1;});
-else process.exitCode=2;
+if (require.main === module) {
+  if (process.argv[2] === 'agent') agent(process.argv[3], process.argv[4], process.argv[5], process.argv[6], process.argv[7], process.argv[8]).catch(() => {process.exitCode=1;});
+  else if (process.argv[2] === 'grade') grade().catch(err => {console.error(err.message); process.exitCode=1;});
+  else process.exitCode=2;
+}
+module.exports = {startRelay};
