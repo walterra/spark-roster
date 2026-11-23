@@ -34,6 +34,26 @@ const (
 var stockUnits = []string{"qwen38-sglang.service", "qwen38-keepalive.service"}
 
 func command(ctx context.Context, dst io.Writer, dir, name string, args ...string) error {
+	var action string
+	switch {
+	case name == "systemctl" && len(args) >= 2:
+		action = args[0] + " " + args[1]
+	case name == "sudo" && len(args) >= 4 && args[1] == "systemctl":
+		action = args[2] + " " + args[3]
+	case name == "sudo" && len(args) >= 2 && args[1] == "systemd-run":
+		action = "launch pi-q8"
+	case name == "docker" && len(args) > 0 && (args[0] == "run" || args[0] == "stop" || args[0] == "rm"):
+		action = "docker " + args[0]
+	}
+	if action != "" {
+		return benchPhase(benchFields(ctx, map[string]any{"command": name, "action": action}), "service.command", func(c context.Context) error {
+			return runCommand(c, dst, dir, name, args...)
+		})
+	}
+	return runCommand(ctx, dst, dir, name, args...)
+}
+
+func runCommand(ctx context.Context, dst io.Writer, dir, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Stdin = os.Stdin

@@ -70,7 +70,7 @@ func runBenchmark(args []string, out, diag io.Writer) int {
 	var err error
 	switch {
 	case len(args) == 1 && args[0] == "telemetry-check":
-		err = checkBenchTelemetry(ctx,out)
+		err = checkBenchTelemetry(ctx, out)
 	case len(args) == 1 && args[0] == "stage" && os.Geteuid() != 0:
 		stage, stop := context.WithTimeout(ctx, 15*time.Minute)
 		defer stop()
@@ -267,10 +267,15 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr 
 		return err
 	}
 	r := benchReport{Schema: 2, Started: time.Now().UTC(), Operator: u.Username, OriginalImage: stockImage, Run: "running", Restoration: "pending", PiImage: image, Suite: suite, Repetitions: benchRepeats, TaskCount: len(tasks), TaskLimitSec: int(taskLimit / time.Second)}
-	ctx,flush,err:=startBenchTelemetry(ctx,"benchmark",r.Started,out,true)
-	if err!=nil{return err};defer flush()
-	benchEventAt(ctx,"run.start",map[string]any{"mode":"benchmark","work_timeout_ms":benchmarkRunLimit.Milliseconds(),"task_timeout_ms":taskLimit.Milliseconds(),"server_stock_context":262144,"server_candidate_context":32768,"pi_context":32768,"pi_output_cap":4096,"pi_image":image,"suite":suite})
-	defer func(){benchEventAt(ctx,"run.end",map[string]any{"outcome":r.Run,"error_kind":benchErrorKind(runErr)})}()
+	ctx, flush, err := startBenchTelemetry(ctx, "benchmark", r.Started, out, true)
+	if err != nil {
+		return err
+	}
+	defer flush()
+	benchEventAt(ctx, "run.start", map[string]any{"mode": "benchmark", "work_timeout_ms": benchmarkRunLimit.Milliseconds(), "task_timeout_ms": taskLimit.Milliseconds(), "server_stock_context": 262144, "server_candidate_context": 32768, "pi_context": 32768, "pi_output_cap": 4096, "pi_image": image, "suite": suite})
+	defer func() {
+		benchEventAt(ctx, "run.end", map[string]any{"outcome": r.Run, "error_kind": benchErrorKind(runErr)})
+	}()
 	if err = writeBenchReport(r); err != nil {
 		return err
 	}
@@ -288,24 +293,26 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr 
 	}
 	for i, t := range targets {
 		fmt.Fprintln(out, "benchmark profile:", t.id)
-		profileCtx:=benchFields(ctx,map[string]any{"profile":t.id})
+		profileCtx := benchFields(ctx, map[string]any{"profile": t.id})
 		res := benchResult{Profile: t.id}
 		r.Profiles = append(r.Profiles, res)
-		err = benchPhase(profileCtx,"profile",func(c context.Context)error{return measureBenchProfile(c, &res, t.port, t.model, t.key, t.switchTo, func(phase context.Context) error {
-			for rep := 1; rep <= benchRepeats; rep++ {
-				for _, task := range tasks {
-					result, err := runPiTask(phase, image, t.model, t.key, t.port, task, rep)
-					fmt.Fprintf(out, "%s %s #%d: %s\n", t.id, task.ID, rep, result.Outcome)
-					res.Tasks = append(res.Tasks, result)
-					r.Profiles[i] = res
-					if err = errors.Join(err, writeBenchReport(r)); err != nil {
-						return err
+		err = benchPhase(profileCtx, "profile", func(c context.Context) error {
+			return measureBenchProfile(c, &res, t.port, t.model, t.key, t.switchTo, func(phase context.Context) error {
+				for rep := 1; rep <= benchRepeats; rep++ {
+					for _, task := range tasks {
+						result, err := runPiTask(phase, image, t.model, t.key, t.port, task, rep)
+						fmt.Fprintf(out, "%s %s #%d: %s\n", t.id, task.ID, rep, result.Outcome)
+						res.Tasks = append(res.Tasks, result)
+						r.Profiles[i] = res
+						if err = errors.Join(err, writeBenchReport(r)); err != nil {
+							return err
+						}
 					}
 				}
-			}
-			return nil
-		}, r.Started.Format(time.RFC3339Nano))})
-		benchEventAt(profileCtx,"profile.memory",map[string]any{"min_available_bytes":res.MinAvailable,"switch_ready_ms":res.SwitchReadyMS})
+				return nil
+			}, r.Started.Format(time.RFC3339Nano))
+		})
+		benchEventAt(profileCtx, "profile.memory", map[string]any{"min_available_bytes": res.MinAvailable, "switch_ready_ms": res.SwitchReadyMS})
 		if err != nil {
 			res.Error = err.Error()
 			r.Run = "failed"
@@ -349,9 +356,10 @@ func recoverBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
 	if r.Run == "running" {
 		r.Run = "interrupted"
 	}
-	ctx,flush,_:=startBenchTelemetry(ctx,"benchmark",r.Started,out,false);defer flush()
-	benchEventAt(ctx,"recovery.start",map[string]any{"prior_outcome":r.Run})
-	defer func(){benchEventAt(ctx,"recovery.end",map[string]any{"restoration":r.Restoration})}()
+	ctx, flush, _ := startBenchTelemetry(ctx, "benchmark", r.Started, out, false)
+	defer flush()
+	benchEventAt(ctx, "recovery.start", map[string]any{"prior_outcome": r.Run})
+	defer func() { benchEventAt(ctx, "recovery.end", map[string]any{"restoration": r.Restoration}) }()
 	// Both candidates must be gone before starting the original stock deployment.
 	cleanup, cancel := context.WithTimeout(ctx, 20*time.Second)
 	cleanupErr := cleanupBenchContainer(cleanup)

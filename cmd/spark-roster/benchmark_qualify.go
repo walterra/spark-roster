@@ -290,10 +290,15 @@ func executeQualification(ctx context.Context, u *user.User, out io.Writer) (err
 		return err
 	}
 	r := qualification{PriorStarted: prior.Started, Started: time.Now().UTC(), Operator: u.Username, OriginalImage: stockImage, CanaryActive: active, Run: "running", Restoration: "pending", PiImage: image, Output: qualOutput}
-	ctx,flush,err:=startBenchTelemetry(ctx,"qualification",r.Started,out,true)
-	if err!=nil{return err};defer flush()
-	benchEventAt(ctx,"run.start",map[string]any{"mode":"qualification","work_timeout_ms":qualWorkBudget.Milliseconds(),"request_timeout_ms":qualDirectBudget.Milliseconds(),"pi_session_timeout_ms":qualPiBudget.Milliseconds(),"pi_context_target":262144,"pi_output_cap":qualOutput,"pi_image":image,"canary_was_active":active})
-	defer func(){benchEventAt(ctx,"run.end",map[string]any{"outcome":r.Run,"shared_context":r.Shared,"error_kind":benchErrorKind(err)})}()
+	ctx, flush, err := startBenchTelemetry(ctx, "qualification", r.Started, out, true)
+	if err != nil {
+		return err
+	}
+	defer flush()
+	benchEventAt(ctx, "run.start", map[string]any{"mode": "qualification", "work_timeout_ms": qualWorkBudget.Milliseconds(), "request_timeout_ms": qualDirectBudget.Milliseconds(), "pi_session_timeout_ms": qualPiBudget.Milliseconds(), "pi_context_target": 262144, "pi_output_cap": qualOutput, "pi_image": image, "canary_was_active": active})
+	defer func() {
+		benchEventAt(ctx, "run.end", map[string]any{"outcome": r.Run, "shared_context": r.Shared, "error_kind": benchErrorKind(err)})
+	}()
 	save := func() error { return writeBenchmarkJSON(qualFile, r) }
 	if err = save(); err != nil {
 		return err
@@ -323,7 +328,7 @@ func executeQualification(ctx context.Context, u *user.User, out io.Writer) (err
 	}
 	for i, t := range configs {
 		fmt.Fprintln(out, "qualifying", t.name)
-		profileCtx:=benchFields(ctx,map[string]any{"profile":t.name})
+		profileCtx := benchFields(ctx, map[string]any{"profile": t.name})
 		if i == 1 {
 			stop, cancel := context.WithTimeout(ctx, time.Minute)
 			err = qualStopStock(stop, out)
@@ -334,7 +339,7 @@ func executeQualification(ctx context.Context, u *user.User, out io.Writer) (err
 		}
 		r.Profiles = append(r.Profiles, qualProfile{Name: t.name})
 		p := &r.Profiles[i]
-		err = benchPhase(profileCtx,"profile",func(c context.Context)error{return qualifyRetryTarget(c,t,image,p,prior,save,out)})
+		err = benchPhase(profileCtx, "profile", func(c context.Context) error { return qualifyRetryTarget(c, t, image, p, prior, save, out) })
 		if e := save(); e != nil {
 			return errors.Join(err, e)
 		}
@@ -379,9 +384,10 @@ func recoverQualification(ctx context.Context, u *user.User, out io.Writer) erro
 	if r.Run == "running" {
 		r.Run = "interrupted"
 	}
-	ctx,flush,_:=startBenchTelemetry(ctx,"qualification",r.Started,out,false);defer flush()
-	benchEventAt(ctx,"recovery.start",map[string]any{"prior_outcome":r.Run,"canary_was_active":r.CanaryActive})
-	defer func(){benchEventAt(ctx,"recovery.end",map[string]any{"restoration":r.Restoration})}()
+	ctx, flush, _ := startBenchTelemetry(ctx, "qualification", r.Started, out, false)
+	defer flush()
+	benchEventAt(ctx, "recovery.start", map[string]any{"prior_outcome": r.Run, "canary_was_active": r.CanaryActive})
+	defer func() { benchEventAt(ctx, "recovery.end", map[string]any{"restoration": r.Restoration}) }()
 	c, stop := context.WithTimeout(ctx, 20*time.Second)
 	cleanup := cleanupBenchContainer(c)
 	stop()
@@ -502,7 +508,7 @@ func qualMeasure(ctx context.Context, p *qualProbe, run func(context.Context) er
 			}
 		}
 	}()
-	err = benchPhase(benchFields(phase,map[string]any{"tier":p.Tier,"server_context":p.Server}),p.Stage,run)
+	err = benchPhase(benchFields(phase, map[string]any{"tier": p.Tier, "server_context": p.Server}), p.Stage, run)
 	cancel()
 	guard := <-done
 	return errors.Join(err, guard), guard
