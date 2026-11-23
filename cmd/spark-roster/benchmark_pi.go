@@ -361,13 +361,7 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 		res.Outcome = "turn_limit"
 		return res, nil
 	case waitErr != nil || parseErr != nil || !end || res.Requests == 0:
-		if observe != nil {
-			res.Diagnostic = fmt.Sprintf("events: %v; process: %v; ended: %t; stderr: %s", parseErr, waitErr, end, strings.TrimSpace(startupLog.String()))
-			if key != "" {
-				res.Diagnostic = strings.ReplaceAll(res.Diagnostic, key, "[redacted]")
-			}
-			res.Diagnostic = res.Diagnostic[:min(len(res.Diagnostic), 2048)]
-		}
+		res.Diagnostic = piFailureDiagnostic(parseErr, waitErr, end, startupLog.String(), key)
 		if res.Requests == 0 && waitErr != nil && startupLog.Len() > 0 {
 			return res, fmt.Errorf("Pi startup: %s", strings.TrimSpace(startupLog.String()))
 		}
@@ -443,4 +437,15 @@ func (d *benchDiagnostic) Write(b []byte) (int, error) {
 func sameJSON(got, want []byte) bool {
 	var a, b any
 	return json.Unmarshal(got, &a) == nil && json.Unmarshal(want, &b) == nil && reflect.DeepEqual(a, b)
+}
+
+// piFailureDiagnostic keeps what the run knew when it failed: the event-parser
+// error, the process error, whether a terminal event arrived, and bounded
+// stderr. The key is redacted and the result bounded.
+func piFailureDiagnostic(parseErr, waitErr error, ended bool, stderr, key string) string {
+	d := fmt.Sprintf("events: %v; process: %v; ended: %t; stderr: %s", parseErr, waitErr, ended, strings.TrimSpace(stderr))
+	if key != "" {
+		d = strings.ReplaceAll(d, key, "[redacted]")
+	}
+	return d[:min(len(d), 2048)]
 }
