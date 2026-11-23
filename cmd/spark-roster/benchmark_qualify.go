@@ -61,10 +61,10 @@ type qualPiEvidence struct {
 func qualifyPi(ctx context.Context, image string, t qualTarget, tier, lines int) (qualPiEvidence, error) {
 	var mu sync.Mutex
 	var wire []qualRequest
-	observe := func(cap, status, size int, finish string) {
+	observe := func(r qualRequest) {
 		mu.Lock()
 		defer mu.Unlock()
-		wire = append(wire, qualRequest{cap, size, status, finish})
+		wire = append(wire, r)
 	}
 	marker := fmt.Sprintf("%x", sha256.Sum256([]byte(t.name+time.Now().String())))[:20]
 	task := piTask{ID: "qualification-tool", Prompt: "First use the read tool on solution.cjs. Then edit the file to export a function returning the exact value of the seal variable you read. Do not guess.", Starter: "const seal = '" + marker + "';\nmodule.exports = () => null;", Cases: json.RawMessage(`[[]]`), Want: json.RawMessage(fmt.Sprintf(`[%q]`, marker))}

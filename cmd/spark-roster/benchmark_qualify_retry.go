@@ -20,18 +20,30 @@ const qualPiBudget = qualPiRequests*qualDirectBudget + time.Minute
 const qualWorkBudget = 2*qualDirectBudget + 3*qualPiBudget + 27*time.Minute
 const qualCandidateLifetime = qualDirectBudget + qualPiBudget + 15*time.Minute
 
+// qualRequest is the relay's record of one chat request: what was sent, what the
+// upstream answered, and why the exchange ended.
 type qualRequest struct {
-	Cap    int    `json:"output_cap"`
-	Bytes  int    `json:"request_bytes"`
-	Status int    `json:"http_status"`
-	Finish string `json:"finish_reason,omitempty"`
+	Cap       int    `json:"output_cap"`
+	Bytes     int    `json:"request_bytes"`
+	Status    int    `json:"http_status"`
+	Finish    string `json:"finish_reason,omitempty"`
+	SawDone   bool   `json:"saw_done,omitempty"`
+	BadEvents int    `json:"unparseable_events,omitempty"`
+	End       string `json:"end"`
+	Error     string `json:"error,omitempty"`
+	ElapsedMS int64  `json:"elapsed_ms"`
 }
 
 type qualSSE struct {
 	line     []byte
 	overflow bool
 	finish   string
+	done     bool
+	bad      int
 }
+
+// terminal reports whether the stream carried a finish_reason or [DONE].
+func (s *qualSSE) terminal() bool { return s.finish != "" || s.done }
 
 func (s *qualSSE) add(b []byte) {
 	for len(b) > 0 {
@@ -50,12 +62,18 @@ func (s *qualSSE) add(b []byte) {
 		}
 		if !s.overflow {
 			if data, ok := bytes.CutPrefix(s.line, []byte("data:")); ok {
+				data = bytes.TrimSpace(data)
 				var event struct {
 					Choices []struct {
 						Finish string `json:"finish_reason"`
 					}
 				}
-				if json.Unmarshal(data, &event) == nil && len(event.Choices) > 0 && event.Choices[0].Finish != "" {
+				switch {
+				case string(data) == "[DONE]":
+					s.done = true
+				case json.Unmarshal(data, &event) != nil:
+					s.bad++
+				case len(event.Choices) > 0 && event.Choices[0].Finish != "":
 					s.finish = event.Choices[0].Finish
 				}
 			}

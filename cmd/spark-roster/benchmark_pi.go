@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -131,7 +132,11 @@ func cleanupBenchContainer(ctx context.Context) error {
 	return nil
 }
 
-func benchRelay(dir string, port uint16, key, model string, observe func(int, int, int, string)) (func(), *atomic.Int64, error) {
+// benchRelay forwards Pi's chat requests to the active endpoint. qual selects the
+// qualification limits. observe, when set, receives one record per request saying
+// how the upstream ended; a stream that stops before a terminal event is aborted so
+// the client sees an error instead of a clean short response.
+func benchRelay(dir string, port uint16, key, model string, qual bool, observe func(qualRequest)) (func(), *atomic.Int64, error) {
 	path := filepath.Join(dir, "inference.sock")
 	l, err := net.Listen("unix", path)
 	if err != nil {
@@ -149,7 +154,7 @@ func benchRelay(dir string, port uint16, key, model string, observe func(int, in
 			return
 		}
 		limit := int64(20)
-		if observe != nil {
+		if qual {
 			limit = qualPiRequests
 		}
 		if requests.Add(1) > limit {
@@ -167,22 +172,26 @@ func benchRelay(dir string, port uint16, key, model string, observe func(int, in
 		if json.Unmarshal(payload["max_tokens"], &cap) != nil {
 			_ = json.Unmarshal(payload["max_completion_tokens"], &cap)
 		}
-		var status, size int
-		var finish string
-		if observe != nil {
-			defer func() { observe(cap, status, size, finish) }()
-		}
+		rec := qualRequest{Cap: cap}
+		started := time.Now()
+		defer func() {
+			rec.ElapsedMS = time.Since(started).Milliseconds()
+			if observe != nil {
+				observe(rec)
+			}
+		}()
 		payload["model"], _ = json.Marshal(model)
 		p, _ := json.Marshal(payload)
-		size = len(p)
+		rec.Bytes = len(p)
 		requestCtx := r.Context()
-		if observe != nil {
+		if qual {
 			var cancel context.CancelFunc
 			requestCtx, cancel = context.WithTimeout(requestCtx, qualDirectBudget)
 			defer cancel()
 		}
 		q, err := http.NewRequestWithContext(requestCtx, "POST", fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), bytes.NewReader(p))
 		if err != nil {
+			rec.End = "invalid_upstream_request"
 			http.Error(w, "invalid upstream", 400)
 			return
 		}
@@ -192,16 +201,27 @@ func benchRelay(dir string, port uint16, key, model string, observe func(int, in
 		}
 		response, err := tr.RoundTrip(q)
 		if err != nil {
+			rec.Status = 502
+			if r.Context().Err() != nil {
+				rec.End = "client_closed"
+			} else {
+				rec.End = "upstream_unreachable"
+				rec.Error = err.Error()
+			}
 			http.Error(w, "inference unavailable", 502)
-			status = 502
 			return
 		}
 		defer response.Body.Close()
-		status = response.StatusCode
+		rec.Status = response.StatusCode
 		if response.StatusCode != 200 {
+			// A short bounded snippet: enough to read "context length exceeded".
+			snippet, _ := io.ReadAll(io.LimitReader(response.Body, 256))
+			rec.End = "upstream_status"
+			rec.Error = strings.TrimSpace(string(snippet))
 			http.Error(w, "inference rejected request", response.StatusCode)
 			return
 		}
+		streaming := strings.Contains(response.Header.Get("Content-Type"), "text/event-stream")
 		w.Header().Set("Content-Type", response.Header.Get("Content-Type"))
 		w.WriteHeader(200)
 		buf := make([]byte, 16<<10)
@@ -209,18 +229,31 @@ func benchRelay(dir string, port uint16, key, model string, observe func(int, in
 		for {
 			n, e := response.Body.Read(buf)
 			if n > 0 {
-				if observe != nil {
-					sse.add(buf[:n])
-					finish = sse.finish
-				}
-				if _, err = w.Write(buf[:n]); err != nil {
+				sse.add(buf[:n])
+				rec.Finish, rec.SawDone, rec.BadEvents = sse.finish, sse.done, sse.bad
+				if _, werr := w.Write(buf[:n]); werr != nil {
+					rec.End, rec.Error = "client_closed", werr.Error()
 					return
 				}
 				_ = http.NewResponseController(w).Flush()
 			}
-			if e != nil {
-				return
+			if e == nil {
+				continue
 			}
+			switch {
+			case e == io.EOF && !(streaming && !sse.terminal()):
+				rec.End = "complete"
+				return
+			case e == io.EOF:
+				rec.End = "eof_without_terminal"
+			case r.Context().Err() != nil:
+				rec.End = "client_closed"
+				return
+			default:
+				rec.End, rec.Error = "upstream_read_error", e.Error()
+			}
+			// Do not let a truncated stream look finished to the client.
+			panic(http.ErrAbortHandler)
 		}
 	})}
 	go func() { _ = server.Serve(l) }()
@@ -276,7 +309,7 @@ func runPiTask(ctx context.Context, image, model, key string, port uint16, task 
 	return runPiTaskWithLimits(ctx, image, model, key, port, task, rep, 32768, 4096, nil)
 }
 
-func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uint16, task piTask, rep, window, maxTokens int, observe func(int, int, int, string)) (res piResult, infra error) {
+func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uint16, task piTask, rep, window, maxTokens int, observe func(qualRequest)) (res piResult, infra error) {
 	res = piResult{Task: task.ID, Repetition: rep, Outcome: "runner_error"}
 	dir, err := sandboxRoot()
 	if err != nil {
@@ -304,7 +337,16 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 		defer cancel()
 		return cleanupBenchContainer(c)
 	}
-	stop, requests, err := benchRelay(relay, port, key, model, observe)
+	var relayMu sync.Mutex
+	var relayLog []qualRequest
+	stop, requests, err := benchRelay(relay, port, key, model, observe != nil, func(r qualRequest) {
+		relayMu.Lock()
+		relayLog = append(relayLog, r)
+		relayMu.Unlock()
+		if observe != nil {
+			observe(r)
+		}
+	})
 	if err != nil {
 		return res, err
 	}
@@ -362,6 +404,12 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 		return res, nil
 	case waitErr != nil || parseErr != nil || !end || res.Requests == 0:
 		res.Diagnostic = piFailureDiagnostic(parseErr, waitErr, end, startupLog.String(), key)
+		relayMu.Lock()
+		if n := len(relayLog); n > 0 {
+			l := relayLog[n-1]
+			res.Diagnostic = boundedRedacted(fmt.Sprintf("%s; relay: end=%s status=%d finish=%q done=%t bad_events=%d error=%s", res.Diagnostic, l.End, l.Status, l.Finish, l.SawDone, l.BadEvents, l.Error), key)
+		}
+		relayMu.Unlock()
 		if res.Requests == 0 && waitErr != nil && startupLog.Len() > 0 {
 			return res, fmt.Errorf("Pi startup: %s", strings.TrimSpace(startupLog.String()))
 		}
@@ -443,7 +491,10 @@ func sameJSON(got, want []byte) bool {
 // error, the process error, whether a terminal event arrived, and bounded
 // stderr. The key is redacted and the result bounded.
 func piFailureDiagnostic(parseErr, waitErr error, ended bool, stderr, key string) string {
-	d := fmt.Sprintf("events: %v; process: %v; ended: %t; stderr: %s", parseErr, waitErr, ended, strings.TrimSpace(stderr))
+	return boundedRedacted(fmt.Sprintf("events: %v; process: %v; ended: %t; stderr: %s", parseErr, waitErr, ended, strings.TrimSpace(stderr)), key)
+}
+
+func boundedRedacted(d, key string) string {
 	if key != "" {
 		d = strings.ReplaceAll(d, key, "[redacted]")
 	}
