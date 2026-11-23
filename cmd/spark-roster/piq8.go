@@ -338,7 +338,7 @@ func restorePiQ8(ctx context.Context, home string, out io.Writer) error {
 	}
 	return restoreAuthorized(ctx, home, out)
 }
-func restoreAuthorized(ctx context.Context, home string, out io.Writer) error {
+func stopPiQ8(ctx context.Context, out io.Writer) error {
 	state, err := piUnitState(ctx)
 	if err != nil {
 		return err
@@ -348,11 +348,15 @@ func restoreAuthorized(ctx context.Context, home string, out io.Writer) error {
 			return err
 		}
 	}
-	if err := confirmedInactive(ctx, piUnit); err != nil {
+	return confirmedInactive(ctx, piUnit)
+}
+
+func restoreAuthorized(ctx context.Context, home string, out io.Writer) error {
+	if err := stopPiQ8(ctx, out); err != nil {
 		return err
 	}
 	p, c := context.WithTimeout(ctx, 12*time.Second)
-	err = stockProbe(p, home)
+	err := stockProbe(p, home)
 	c()
 	if err == nil {
 		fmt.Fprintln(out, "Stock Qwen generation verified; Pi Q8 stopped.")
@@ -360,7 +364,7 @@ func restoreAuthorized(ctx context.Context, home string, out io.Writer) error {
 	}
 	// Never credit memory reclaim merely from stopping a unit. If the engine is
 	// already active, starting its proxy does not require loading a second copy.
-	state, err = output(ctx, "systemctl", "show", "-p", "ActiveState", "--value", stockUnits[0])
+	state, err := output(ctx, "systemctl", "show", "-p", "ActiveState", "--value", stockUnits[0])
 	if err != nil {
 		return err
 	}
@@ -431,10 +435,17 @@ func switchPiQ8(ctx context.Context, home, base string, lifetime time.Duration, 
 	if e != nil || running != "" {
 		return fmt.Errorf("stock Docker exit not confirmed")
 	}
+	return launchPiQ8(ctx, u, exe, weights, lifetime, 32768, out)
+}
+
+func launchPiQ8(ctx context.Context, u *user.User, exe, weights string, lifetime time.Duration, window int, out io.Writer) error {
+	if err := qualCandidatesClear(ctx); err != nil {
+		return err
+	}
 	if e := requireRAM(65 * trialGiB); e != nil {
 		return e
 	}
-	if e := command(ctx, out, "", "sudo", "-n", "systemd-run", "--unit="+piUnit, "--uid="+u.Uid, "--gid="+u.Gid, "--property=MemoryMax=48G", "--property=MemorySwapMax=0", fmt.Sprintf("--property=RuntimeMaxSec=%ds", int64(lifetime/time.Second)), "--property=KillMode=control-group", "--property=Type=exec", "--", exe, "--model", weights, "--alias", "qwen3.8-pi", "--host", "127.0.0.1", "--port", "9931", "--ctx-size", "32768", "--parallel", "1", "--gpu-layers", "all", "--jinja", "--reasoning", "off"); e != nil {
+	if e := command(ctx, out, "", "sudo", "-n", "systemd-run", "--unit="+piUnit, "--uid="+u.Uid, "--gid="+u.Gid, "--property=MemoryMax=48G", "--property=MemorySwapMax=0", fmt.Sprintf("--property=RuntimeMaxSec=%ds", int64(lifetime/time.Second)), "--property=KillMode=control-group", "--property=Type=exec", "--", exe, "--model", weights, "--alias", "qwen3.8-pi", "--host", "127.0.0.1", "--port", "9931", "--ctx-size", fmt.Sprint(window), "--parallel", "1", "--gpu-layers", "all", "--jinja", "--reasoning", "off"); e != nil {
 		return e
 	}
 	startup, stop := context.WithTimeout(ctx, 4*time.Minute)

@@ -265,6 +265,22 @@ func switchInkling(ctx context.Context, home, base string, out io.Writer) (err e
 			return err
 		}
 	}
+	return launchInkling(ctx, base, 32768, out)
+}
+
+// launchInkling also supports benchmark handoffs, where stock is already stopped.
+func launchInkling(ctx context.Context, base string, window int, out io.Writer) error {
+	if err := confirmedInactive(ctx, piUnit); err != nil {
+		return err
+	}
+	for _, unit := range stockUnits {
+		if err := confirmedInactive(ctx, unit); err != nil {
+			return err
+		}
+	}
+	if s, err := inklingState(ctx); err != nil || s != "absent" {
+		return fmt.Errorf("Inkling container is not confirmed absent: %s: %v", s, err)
+	}
 	running, err := output(ctx, "docker", "ps", "--filter", "name=^/qwen38-sglang$", "--format", "{{.Names}}")
 	if err != nil || running != "" {
 		return fmt.Errorf("stock Docker exit not confirmed")
@@ -309,7 +325,7 @@ func switchInkling(ctx context.Context, home, base string, out io.Writer) (err e
 	}()
 	defer func() { stop(); <-sampled }()
 	start := time.Now()
-	if err = command(startup, out, "", "docker", "run", "--detach", "--pull=never", "--name", inklingName, "--label", inklingLabel, "--gpus", "all", "--network", "host", "--shm-size", "8g", "--memory", "96g", "--memory-swap", "96g", "--security-opt", "no-new-privileges", "--env", "MAX_JOBS=4", "--env", "HF_HUB_OFFLINE=1", "--mount", "type=bind,src="+base+",dst=/model,readonly", "--entrypoint", "sglang", inklingImage, "serve", "--model-path", "/model", "--served-model-name", inklingModel, "--tp", "1", "--ep", "1", "--attention-backend", "fa4", "--dtype", "bfloat16", "--page-size", "128", "--mem-fraction-static", "0.45", "--grammar-backend", "xgrammar", "--reasoning-parser", "inkling", "--tool-call-parser", "inkling2", "--context-length", "32768", "--max-running-requests", "1", "--enable-metrics", "--host", "127.0.0.1", "--port", "9932"); err != nil {
+	if err = command(startup, out, "", "docker", "run", "--detach", "--pull=never", "--name", inklingName, "--label", inklingLabel, "--gpus", "all", "--network", "host", "--shm-size", "8g", "--memory", "96g", "--memory-swap", "96g", "--security-opt", "no-new-privileges", "--env", "MAX_JOBS=4", "--env", "HF_HUB_OFFLINE=1", "--mount", "type=bind,src="+base+",dst=/model,readonly", "--entrypoint", "sglang", inklingImage, "serve", "--model-path", "/model", "--served-model-name", inklingModel, "--tp", "1", "--ep", "1", "--attention-backend", "fa4", "--dtype", "bfloat16", "--page-size", "128", "--mem-fraction-static", "0.45", "--grammar-backend", "xgrammar", "--reasoning-parser", "inkling", "--tool-call-parser", "inkling2", "--context-length", fmt.Sprint(window), "--max-running-requests", "1", "--enable-metrics", "--host", "127.0.0.1", "--port", "9932"); err != nil {
 		return err
 	}
 	if err = waitGeneration(startup, probeInkling, 10*trialGiB); err != nil {

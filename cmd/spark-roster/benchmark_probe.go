@@ -96,6 +96,10 @@ func measureBenchProfile(ctx context.Context, res *benchResult, port uint16, mod
 func benchCompletion(ctx context.Context, port uint16, model, key, prompt string, tokens int) (benchSpeed, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	return timedCompletion(ctx, port, model, key, prompt, tokens)
+}
+
+func timedCompletion(ctx context.Context, port uint16, model, key, prompt string, tokens int) (benchSpeed, string, error) {
 	payload, err := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "max_tokens": tokens, "temperature": 0, "stream": true, "stream_options": map[string]bool{"include_usage": true}})
 	if err != nil {
 		return benchSpeed{}, "", err

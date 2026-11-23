@@ -34,8 +34,10 @@ type piTask struct {
 	ID, Prompt, Starter string
 	Cases, Want         json.RawMessage
 	Immutable           bool
+	Attachment          string `json:"-"`
 }
 type piResult struct {
+	Diagnostic       string `json:"diagnostic,omitempty"`
 	Task             string `json:"task"`
 	Repetition       int    `json:"repetition"`
 	Outcome          string `json:"outcome"`
@@ -43,6 +45,8 @@ type piResult struct {
 	Requests         int64  `json:"inference_requests"`
 	ToolCalls        int    `json:"tool_calls"`
 	PromptTokens     int    `json:"reported_prompt_tokens"`
+	PeakPrompt       int    `json:"peak_reported_prompt_tokens,omitempty"`
+	Compactions      int    `json:"compactions,omitempty"`
 	CompletionTokens int    `json:"reported_completion_tokens"`
 	Grade            string `json:"grade,omitempty"`
 }
@@ -127,7 +131,7 @@ func cleanupBenchContainer(ctx context.Context) error {
 	return nil
 }
 
-func benchRelay(dir string, port uint16, key, model string) (func(), *atomic.Int64, error) {
+func benchRelay(dir string, port uint16, key, model string, observe func(int, int, int, string)) (func(), *atomic.Int64, error) {
 	path := filepath.Join(dir, "inference.sock")
 	l, err := net.Listen("unix", path)
 	if err != nil {
@@ -144,20 +148,40 @@ func benchRelay(dir string, port uint16, key, model string) (func(), *atomic.Int
 			http.NotFound(w, r)
 			return
 		}
-		if requests.Add(1) > 20 {
+		limit := int64(20)
+		if observe != nil {
+			limit = qualPiRequests
+		}
+		if requests.Add(1) > limit {
 			http.Error(w, "turn budget exhausted", http.StatusTooManyRequests)
 			return
 		}
 		defer r.Body.Close()
 		var payload map[string]json.RawMessage
-		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512<<10))
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20))
 		if d.Decode(&payload) != nil || payload == nil {
 			http.Error(w, "invalid request", 400)
 			return
 		}
+		var cap int
+		if json.Unmarshal(payload["max_tokens"], &cap) != nil {
+			_ = json.Unmarshal(payload["max_completion_tokens"], &cap)
+		}
+		var status, size int
+		var finish string
+		if observe != nil {
+			defer func() { observe(cap, status, size, finish) }()
+		}
 		payload["model"], _ = json.Marshal(model)
 		p, _ := json.Marshal(payload)
-		q, err := http.NewRequestWithContext(r.Context(), "POST", fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), bytes.NewReader(p))
+		size = len(p)
+		requestCtx := r.Context()
+		if observe != nil {
+			var cancel context.CancelFunc
+			requestCtx, cancel = context.WithTimeout(requestCtx, qualDirectBudget)
+			defer cancel()
+		}
+		q, err := http.NewRequestWithContext(requestCtx, "POST", fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), bytes.NewReader(p))
 		if err != nil {
 			http.Error(w, "invalid upstream", 400)
 			return
@@ -169,9 +193,11 @@ func benchRelay(dir string, port uint16, key, model string) (func(), *atomic.Int
 		response, err := tr.RoundTrip(q)
 		if err != nil {
 			http.Error(w, "inference unavailable", 502)
+			status = 502
 			return
 		}
 		defer response.Body.Close()
+		status = response.StatusCode
 		if response.StatusCode != 200 {
 			http.Error(w, "inference rejected request", response.StatusCode)
 			return
@@ -179,9 +205,14 @@ func benchRelay(dir string, port uint16, key, model string) (func(), *atomic.Int
 		w.Header().Set("Content-Type", response.Header.Get("Content-Type"))
 		w.WriteHeader(200)
 		buf := make([]byte, 16<<10)
+		var sse qualSSE
 		for {
 			n, e := response.Body.Read(buf)
 			if n > 0 {
+				if observe != nil {
+					sse.add(buf[:n])
+					finish = sse.finish
+				}
 				if _, err = w.Write(buf[:n]); err != nil {
 					return
 				}
@@ -212,8 +243,8 @@ func collectPiEvents(r io.Reader, res *piResult) (bool, error) {
 		var e struct {
 			Type    string
 			Message struct {
-				Role, StopReason string
-				Usage            struct{ Input, Output, CacheRead, CacheWrite int }
+				Role, StopReason, ErrorMessage string
+				Usage                          struct{ Input, Output, CacheRead, CacheWrite int }
 			}
 		}
 		if json.Unmarshal(scanner.Bytes(), &e) != nil {
@@ -224,12 +255,16 @@ func collectPiEvents(r io.Reader, res *piResult) (bool, error) {
 			res.ToolCalls++
 		case "message_end":
 			if e.Message.Role == "assistant" {
-				res.PromptTokens += e.Message.Usage.Input + e.Message.Usage.CacheRead + e.Message.Usage.CacheWrite
+				prompt := e.Message.Usage.Input + e.Message.Usage.CacheRead + e.Message.Usage.CacheWrite
+				res.PromptTokens += prompt
+				res.PeakPrompt = max(res.PeakPrompt, prompt)
 				res.CompletionTokens += e.Message.Usage.Output
 				if e.Message.StopReason == "error" || e.Message.StopReason == "aborted" {
-					return false, errors.New("Pi inference error")
+					return false, fmt.Errorf("Pi %s: %s", e.Message.StopReason, e.Message.ErrorMessage)
 				}
 			}
+		case "auto_compaction_end":
+			res.Compactions++
 		case "agent_end":
 			end = true
 		}
@@ -237,7 +272,11 @@ func collectPiEvents(r io.Reader, res *piResult) (bool, error) {
 	return end, scanner.Err()
 }
 
-func runPiTask(ctx context.Context, image, model, key string, port uint16, task piTask, rep int) (res piResult, infra error) {
+func runPiTask(ctx context.Context, image, model, key string, port uint16, task piTask, rep int) (piResult, error) {
+	return runPiTaskWithLimits(ctx, image, model, key, port, task, rep, 32768, 4096, nil)
+}
+
+func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uint16, task piTask, rep, window, maxTokens int, observe func(int, int, int, string)) (res piResult, infra error) {
 	res = piResult{Task: task.ID, Repetition: rep, Outcome: "runner_error"}
 	dir, err := sandboxRoot()
 	if err != nil {
@@ -265,15 +304,28 @@ func runPiTask(ctx context.Context, image, model, key string, port uint16, task 
 		defer cancel()
 		return cleanupBenchContainer(c)
 	}
-	stop, requests, err := benchRelay(relay, port, key, model)
+	stop, requests, err := benchRelay(relay, port, key, model, observe)
 	if err != nil {
 		return res, err
 	}
 	defer stop()
 	prompt := "Modify solution.cjs in the workspace. Export only the requested function via module.exports. Use Node.js standard library only. You can run your own checks. The grader loads the exported function.\n\n" + task.Prompt
-	args := append(benchDockerArgs(work, false), "--mount", "type=bind,src="+relay+",dst=/relay,readonly", image, "/opt/bench/runner.cjs", "agent", model, prompt)
+	args := append(benchDockerArgs(work, false), "--mount", "type=bind,src="+relay+",dst=/relay,readonly", image, "/opt/bench/runner.cjs", "agent", model, prompt, fmt.Sprint(window), fmt.Sprint(maxTokens))
+	attachment := "-"
+	if task.Attachment != "" {
+		if err := os.WriteFile(filepath.Join(work, "qual-context.txt"), []byte(task.Attachment), 0644); err != nil {
+			return res, err
+		}
+		attachment = "/work/qual-context.txt"
+	}
+	args = append(args, attachment)
+	limit := taskLimit
+	if observe != nil {
+		limit = qualPiBudget
+		args = append(args, fmt.Sprint(qualDirectBudget.Milliseconds()))
+	}
 	start := time.Now()
-	phase, cancel := context.WithTimeout(ctx, taskLimit)
+	phase, cancel := context.WithTimeout(ctx, limit)
 	cmd := exec.CommandContext(phase, "docker", args...)
 	var startupLog bytes.Buffer
 	cmd.Stderr = &benchDiagnostic{buf: &startupLog}
@@ -309,6 +361,13 @@ func runPiTask(ctx context.Context, image, model, key string, port uint16, task 
 		res.Outcome = "turn_limit"
 		return res, nil
 	case waitErr != nil || parseErr != nil || !end || res.Requests == 0:
+		if observe != nil {
+			res.Diagnostic = fmt.Sprintf("events: %v; process: %v; ended: %t; stderr: %s", parseErr, waitErr, end, strings.TrimSpace(startupLog.String()))
+			if key != "" {
+				res.Diagnostic = strings.ReplaceAll(res.Diagnostic, key, "[redacted]")
+			}
+			res.Diagnostic = res.Diagnostic[:min(len(res.Diagnostic), 2048)]
+		}
 		if res.Requests == 0 && waitErr != nil && startupLog.Len() > 0 {
 			return res, fmt.Errorf("Pi startup: %s", strings.TrimSpace(startupLog.String()))
 		}

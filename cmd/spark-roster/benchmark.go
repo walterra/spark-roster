@@ -55,7 +55,7 @@ var benchUsername = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,63}$`)
 
 func runBenchmark(args []string, out, diag io.Writer) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(out, "Usage: spark-roster benchmark stage|preflight|check|status|report|run OPERATOR|recover OPERATOR")
+		fmt.Fprintln(out, "Usage: spark-roster benchmark stage|preflight|check|status|report|run OPERATOR|recover OPERATOR|qualify-preflight|qualify OPERATOR|qualify-status|qualify-recover OPERATOR")
 		return 0
 	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" {
@@ -64,8 +64,13 @@ func runBenchmark(args []string, out, diag io.Writer) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), benchmarkRunLimit)
 	defer cancel()
+	if strings.HasPrefix(args[0], "qualify") {
+		return runQualify(ctx, args, out, diag)
+	}
 	var err error
 	switch {
+	case len(args) == 1 && args[0] == "telemetry-check":
+		err = checkBenchTelemetry(ctx,out)
 	case len(args) == 1 && args[0] == "stage" && os.Geteuid() != 0:
 		stage, stop := context.WithTimeout(ctx, 15*time.Minute)
 		defer stop()
@@ -199,7 +204,9 @@ func benchPreflight(ctx context.Context, home string) error {
 	return stockProbe(probe, home)
 }
 
-func writeBenchReport(r benchReport) error {
+func writeBenchReport(r benchReport) error { return writeBenchmarkJSON("latest.json", r) }
+
+func writeBenchmarkJSON(name string, r any) error {
 	if err := os.MkdirAll(benchmarkState, 0755); err != nil {
 		return err
 	}
@@ -221,7 +228,7 @@ func writeBenchReport(r benchReport) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(f.Name(), filepath.Join(benchmarkState, "latest.json")); err != nil {
+	if err = os.Rename(f.Name(), filepath.Join(benchmarkState, name)); err != nil {
 		return err
 	}
 	dir, err := os.Open(benchmarkState)
@@ -232,7 +239,10 @@ func writeBenchReport(r benchReport) error {
 	return dir.Sync()
 }
 
-func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
+func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr error) {
+	if err := qualificationSettled(); err != nil {
+		return err
+	}
 	var prior benchReport
 	if err := readJSON(filepath.Join(benchmarkState, "latest.json"), &prior); err == nil {
 		if prior.Restoration != "verified" {
@@ -257,6 +267,10 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
 		return err
 	}
 	r := benchReport{Schema: 2, Started: time.Now().UTC(), Operator: u.Username, OriginalImage: stockImage, Run: "running", Restoration: "pending", PiImage: image, Suite: suite, Repetitions: benchRepeats, TaskCount: len(tasks), TaskLimitSec: int(taskLimit / time.Second)}
+	ctx,flush,err:=startBenchTelemetry(ctx,"benchmark",r.Started,out,true)
+	if err!=nil{return err};defer flush()
+	benchEventAt(ctx,"run.start",map[string]any{"mode":"benchmark","work_timeout_ms":benchmarkRunLimit.Milliseconds(),"task_timeout_ms":taskLimit.Milliseconds(),"server_stock_context":262144,"server_candidate_context":32768,"pi_context":32768,"pi_output_cap":4096,"pi_image":image,"suite":suite})
+	defer func(){benchEventAt(ctx,"run.end",map[string]any{"outcome":r.Run,"error_kind":benchErrorKind(runErr)})}()
 	if err = writeBenchReport(r); err != nil {
 		return err
 	}
@@ -268,13 +282,16 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
 	}{
 		{"stock-qwen", "qwen3.8-27b", strings.TrimSpace(string(key)), 30001, nil},
 		{"pi-q8", "qwen3.8-pi", "", piPort, func(c context.Context) error { return switchPiQ8(c, u.HomeDir, pi, benchmarkPiLifetime, out) }},
-		{"inkling-2-mini", inklingModel, "", inklingPort, func(c context.Context) error { return switchInkling(c, u.HomeDir, ink, out) }},
+		{"inkling-2-mini", inklingModel, "", inklingPort, func(c context.Context) error {
+			return handoffBenchmark(c, func(c context.Context) error { return stopPiQ8(c, out) }, func(c context.Context) error { return launchInkling(c, ink, 32768, out) })
+		}},
 	}
 	for i, t := range targets {
 		fmt.Fprintln(out, "benchmark profile:", t.id)
+		profileCtx:=benchFields(ctx,map[string]any{"profile":t.id})
 		res := benchResult{Profile: t.id}
 		r.Profiles = append(r.Profiles, res)
-		err = measureBenchProfile(ctx, &res, t.port, t.model, t.key, t.switchTo, func(phase context.Context) error {
+		err = benchPhase(profileCtx,"profile",func(c context.Context)error{return measureBenchProfile(c, &res, t.port, t.model, t.key, t.switchTo, func(phase context.Context) error {
 			for rep := 1; rep <= benchRepeats; rep++ {
 				for _, task := range tasks {
 					result, err := runPiTask(phase, image, t.model, t.key, t.port, task, rep)
@@ -287,7 +304,8 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
 				}
 			}
 			return nil
-		}, r.Started.Format(time.RFC3339Nano))
+		}, r.Started.Format(time.RFC3339Nano))})
+		benchEventAt(profileCtx,"profile.memory",map[string]any{"min_available_bytes":res.MinAvailable,"switch_ready_ms":res.SwitchReadyMS})
 		if err != nil {
 			res.Error = err.Error()
 			r.Run = "failed"
@@ -299,18 +317,19 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if i == 1 { // Existing guarded switch adapters both require the verified stock baseline.
-			restore, cancel := context.WithTimeout(ctx, 12*time.Minute)
-			err = restoreAuthorized(restore, u.HomeDir, out)
-			cancel()
-			if err != nil {
-				r.Run = "failed"
-				return errors.Join(err, writeBenchReport(r))
-			}
-		}
 	}
 	r.Run = "completed"
 	return writeBenchReport(r)
+}
+
+func handoffBenchmark(ctx context.Context, stop, launch func(context.Context) error) error {
+	bounded, cancel := context.WithTimeout(ctx, time.Minute)
+	err := stop(bounded)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("confirm Pi Q8 stopped before Inkling: %w", err)
+	}
+	return launch(ctx)
 }
 
 func recoverBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
@@ -330,6 +349,9 @@ func recoverBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
 	if r.Run == "running" {
 		r.Run = "interrupted"
 	}
+	ctx,flush,_:=startBenchTelemetry(ctx,"benchmark",r.Started,out,false);defer flush()
+	benchEventAt(ctx,"recovery.start",map[string]any{"prior_outcome":r.Run})
+	defer func(){benchEventAt(ctx,"recovery.end",map[string]any{"restoration":r.Restoration})}()
 	// Both candidates must be gone before starting the original stock deployment.
 	cleanup, cancel := context.WithTimeout(ctx, 20*time.Second)
 	cleanupErr := cleanupBenchContainer(cleanup)
