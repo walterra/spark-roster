@@ -32,6 +32,19 @@ type qualRequest struct {
 	End       string `json:"end"`
 	Error     string `json:"error,omitempty"`
 	ElapsedMS int64  `json:"elapsed_ms"`
+	// Where the time went, in ms from the start of the request. A nil value means the
+	// event never happened. HeadersMS well before FirstByteMS means the engine sent
+	// headers early and the long silence was in the body.
+	BodyReadMS    int64  `json:"request_body_read_ms"`
+	HeadersMS     *int64 `json:"headers_ms,omitempty"`
+	FirstByteMS   *int64 `json:"first_byte_ms,omitempty"`
+	LastByteMS    *int64 `json:"last_byte_ms,omitempty"`
+	ResponseBytes int    `json:"response_bytes,omitempty"`
+	// TeardownMS is the time, in ms from the start of the request, at which the harness
+	// began cancelling or stopping. It is set only when that happened before the relay
+	// recorded this end. Compare it with ElapsedMS: a client_closed that comes first
+	// was not the harness's doing, and one within a few ms of it may be either.
+	TeardownMS *int64 `json:"harness_teardown_ms,omitempty"`
 }
 
 type qualSSE struct {

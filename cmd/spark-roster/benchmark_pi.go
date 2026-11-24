@@ -136,23 +136,42 @@ func cleanupBenchContainer(ctx context.Context) error {
 // shorten it; production keeps 15 s.
 var relayReadTimeout = 15 * time.Second
 
+// relayDrainBody is a test knob so a test can recreate the relay as it was before the
+// body drain. Production always reads the request body to its end.
+var relayDrainBody = true
+
 // benchRelay forwards Pi's chat requests to the active endpoint. qual selects the
 // qualification limits. observe, when set, receives one record per request saying
 // how the upstream ended; a stream that stops before a terminal event is aborted so
 // the client sees an error instead of a clean short response.
 func benchRelay(dir string, port uint16, key, model string, qual bool, observe func(qualRequest)) (func(), *atomic.Int64, error) {
+	stop, _, requests, err := benchRelayTeardown(dir, port, key, model, qual, observe)
+	return stop, requests, err
+}
+
+// benchRelayTeardown is benchRelay plus markTeardown. The harness calls it before it
+// cancels or kills the client so that the resulting client_closed is not blamed on the
+// client. stop marks teardown, closes the server, and waits briefly for in-flight
+// requests to record how they ended.
+func benchRelayTeardown(dir string, port uint16, key, model string, qual bool, observe func(qualRequest)) (stop, markTeardown func(), requests *atomic.Int64, err error) {
 	path := filepath.Join(dir, "inference.sock")
 	l, err := net.Listen("unix", path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err = os.Chmod(path, 0666); err != nil {
 		l.Close()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	var requests atomic.Int64
+	requests = new(atomic.Int64)
+	var teardownAt atomic.Int64 // unix nanoseconds, 0 until teardown begins
+	var inflight sync.WaitGroup
 	tr := &http.Transport{DisableKeepAlives: true}
+	ms := func(t time.Time) *int64 { v := time.Since(t).Milliseconds(); return &v }
 	server := &http.Server{ReadHeaderTimeout: 3 * time.Second, ReadTimeout: relayReadTimeout, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inflight.Add(1)
+		defer inflight.Done()
+		started := time.Now()
 		if r.Method != "POST" || r.URL.RequestURI() != "/v1/chat/completions" {
 			http.NotFound(w, r)
 			return
@@ -178,18 +197,23 @@ func benchRelay(dir string, port uint16, key, model string, qual bool, observe f
 		// Until then the server's ReadTimeout stays armed, and on the first response
 		// write net/http tries to discard the unread body, fails on the expired
 		// deadline, and cancels this request's context mid-stream.
-		if _, err := io.Copy(io.Discard, limited); err != nil {
-			http.Error(w, "invalid request", 400)
-			return
+		if relayDrainBody {
+			if _, err := io.Copy(io.Discard, limited); err != nil {
+				http.Error(w, "invalid request", 400)
+				return
+			}
 		}
 		var cap int
 		if json.Unmarshal(payload["max_tokens"], &cap) != nil {
 			_ = json.Unmarshal(payload["max_completion_tokens"], &cap)
 		}
-		rec := qualRequest{Cap: cap}
-		started := time.Now()
+		rec := qualRequest{Cap: cap, BodyReadMS: time.Since(started).Milliseconds()}
 		defer func() {
 			rec.ElapsedMS = time.Since(started).Milliseconds()
+			if at := teardownAt.Load(); at != 0 {
+				v := (at - started.UnixNano()) / int64(time.Millisecond)
+				rec.TeardownMS = &v
+			}
 			if observe != nil {
 				observe(rec)
 			}
@@ -226,6 +250,7 @@ func benchRelay(dir string, port uint16, key, model string, qual bool, observe f
 			return
 		}
 		defer response.Body.Close()
+		rec.HeadersMS = ms(started)
 		rec.Status = response.StatusCode
 		if response.StatusCode != 200 {
 			// A short bounded snippet: enough to read "context length exceeded".
@@ -243,6 +268,11 @@ func benchRelay(dir string, port uint16, key, model string, qual bool, observe f
 		for {
 			n, e := response.Body.Read(buf)
 			if n > 0 {
+				if rec.FirstByteMS == nil {
+					rec.FirstByteMS = ms(started)
+				}
+				rec.LastByteMS = ms(started)
+				rec.ResponseBytes += n
 				sse.add(buf[:n])
 				rec.Finish, rec.SawDone, rec.BadEvents = sse.finish, sse.done, sse.bad
 				if _, werr := w.Write(buf[:n]); werr != nil {
@@ -261,8 +291,10 @@ func benchRelay(dir string, port uint16, key, model string, qual bool, observe f
 			case e == io.EOF:
 				rec.End = "eof_without_terminal"
 			case r.Context().Err() != nil:
+				// The client may really have gone, or net/http may have cancelled
+				// the context itself. Either way a clean end would look like a
+				// finished stream, so abort and let the record say which it was.
 				rec.End = "client_closed"
-				return
 			default:
 				rec.End, rec.Error = "upstream_read_error", e.Error()
 			}
@@ -271,7 +303,19 @@ func benchRelay(dir string, port uint16, key, model string, qual bool, observe f
 		}
 	})}
 	go func() { _ = server.Serve(l) }()
-	return func() { _ = server.Close(); tr.CloseIdleConnections() }, &requests, nil
+	markTeardown = func() { teardownAt.CompareAndSwap(0, time.Now().UnixNano()) }
+	stop = func() {
+		markTeardown()
+		_ = server.Close()
+		done := make(chan struct{})
+		go func() { inflight.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+		tr.CloseIdleConnections()
+	}
+	return stop, markTeardown, requests, nil
 }
 
 func sandboxRoot() (string, error) {
@@ -353,7 +397,7 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 	}
 	var relayMu sync.Mutex
 	var relayLog []qualRequest
-	stop, requests, err := benchRelay(relay, port, key, model, observe != nil, func(r qualRequest) {
+	stop, markTeardown, requests, err := benchRelayTeardown(relay, port, key, model, observe != nil, func(r qualRequest) {
 		relayMu.Lock()
 		relayLog = append(relayLog, r)
 		relayMu.Unlock()
@@ -382,6 +426,9 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 	}
 	start := time.Now()
 	phase, cancel := context.WithTimeout(ctx, limit)
+	// Any end of the attempt that the harness causes (deadline, its own cancel) happens
+	// through phase; mark it first so the relay does not blame the client.
+	go func() { <-phase.Done(); markTeardown() }()
 	cmd := exec.CommandContext(phase, "docker", args...)
 	var startupLog bytes.Buffer
 	cmd.Stderr = &benchDiagnostic{buf: &startupLog}
@@ -421,7 +468,7 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 		relayMu.Lock()
 		if n := len(relayLog); n > 0 {
 			l := relayLog[n-1]
-			res.Diagnostic = boundedRedacted(fmt.Sprintf("%s; relay: end=%s status=%d finish=%q done=%t bad_events=%d error=%s", res.Diagnostic, l.End, l.Status, l.Finish, l.SawDone, l.BadEvents, l.Error), key)
+			res.Diagnostic = boundedRedacted(fmt.Sprintf("%s; relay: end=%s status=%d finish=%q done=%t bad_events=%d bytes=%d headers_ms=%s first_byte_ms=%s last_byte_ms=%s body_read_ms=%d teardown_ms=%s elapsed_ms=%d error=%s", res.Diagnostic, l.End, l.Status, l.Finish, l.SawDone, l.BadEvents, l.ResponseBytes, fmtMS(l.HeadersMS), fmtMS(l.FirstByteMS), fmtMS(l.LastByteMS), l.BodyReadMS, fmtMS(l.TeardownMS), l.ElapsedMS, l.Error), key)
 		}
 		relayMu.Unlock()
 		if res.Requests == 0 && waitErr != nil && startupLog.Len() > 0 {
@@ -513,4 +560,11 @@ func boundedRedacted(d, key string) string {
 		d = strings.ReplaceAll(d, key, "[redacted]")
 	}
 	return d[:min(len(d), 2048)]
+}
+
+func fmtMS(p *int64) string {
+	if p == nil {
+		return "none"
+	}
+	return fmt.Sprint(*p)
 }

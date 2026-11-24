@@ -129,6 +129,39 @@ func selftestCases() []selftestCase {
 			},
 		},
 		{
+			// A long prefill: nothing for longer than the relay's read timeout, then a
+			// normal stream. Before the relay drained the request body this truncated
+			// the stream silently. The delay is derived from the timeout, not guessed.
+			name: "slow-first-byte-past-the-relay-read-timeout",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				io.Copy(io.Discard, r.Body)
+				time.Sleep(relayReadTimeout + 5*time.Second)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(200)
+				io.WriteString(w, fakeChunk(map[string]any{"role": "assistant", "content": "Done."}, nil))
+				w.(http.Flusher).Flush()
+				time.Sleep(500 * time.Millisecond)
+				io.WriteString(w, fakeChunk(map[string]any{}, "stop"))
+				io.WriteString(w, fakeUsage())
+				io.WriteString(w, "data: [DONE]\n\n")
+			},
+			verdict: func(res piResult, relay []qualRequest, _ time.Duration) error {
+				l, err := last(relay)
+				if err != nil {
+					return err
+				}
+				switch {
+				case l.FirstByteMS == nil || *l.FirstByteMS < relayReadTimeout.Milliseconds():
+					return fmt.Errorf("the case did not exercise a slow first byte: %+v", l)
+				case l.End != "complete" || l.Finish != "stop" || !l.SawDone || l.TeardownMS != nil:
+					return fmt.Errorf("a slow first byte truncated the stream: end=%s finish=%q done=%t teardown_ms=%s; diagnostic %q", l.End, l.Finish, l.SawDone, fmtMS(l.TeardownMS), res.Diagnostic)
+				case res.Outcome != "fail" || res.Grade != "incorrect_output":
+					return fmt.Errorf("want outcome fail/incorrect_output, got %s/%s; diagnostic %q", res.Outcome, res.Grade, res.Diagnostic)
+				}
+				return nil
+			},
+		},
+		{
 			name: "upstream-rejects-request",
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "context length exceeded", 400)

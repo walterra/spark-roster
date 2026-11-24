@@ -17,6 +17,12 @@ import (
 // relayHarness runs the real benchRelay between a Go client on its Unix socket
 // and a fake upstream. It needs no Docker, so it runs on any host.
 func relayHarness(t *testing.T, upstream http.HandlerFunc) (*http.Client, chan qualRequest) {
+	c, ch, _, _ := relayWithControl(t, upstream)
+	return c, ch
+}
+
+// relayWithControl also returns the relay's stop and markTeardown functions.
+func relayWithControl(t *testing.T, upstream http.HandlerFunc) (*http.Client, chan qualRequest, func(), func()) {
 	t.Helper()
 	up := httptest.NewServer(upstream)
 	t.Cleanup(up.Close)
@@ -28,7 +34,7 @@ func relayHarness(t *testing.T, upstream http.HandlerFunc) (*http.Client, chan q
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	records := make(chan qualRequest, 8)
-	stop, _, err := benchRelay(dir, port, "", "m", true, func(r qualRequest) { records <- r })
+	stop, mark, _, err := benchRelayTeardown(dir, port, "", "m", true, func(r qualRequest) { records <- r })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +45,25 @@ func relayHarness(t *testing.T, upstream http.HandlerFunc) (*http.Client, chan q
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 		},
-	}}, records
+	}}, records, stop, mark
+}
+
+// stallUntilAbandoned holds an upstream response open until the relay abandons it. The
+// handler must read the request body first: net/http only notices a closed connection,
+// and cancels the request context, once the body has been read to its end. Without
+// that, this would wait forever. The bound turns any such mistake into a failure.
+func stallUntilAbandoned(w http.ResponseWriter, r *http.Request, onStalled func()) {
+	io.Copy(io.Discard, r.Body)
+	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprint(w, sseChunk)
+	w.(http.Flusher).Flush()
+	if onStalled != nil {
+		onStalled()
+	}
+	select {
+	case <-r.Context().Done():
+	case <-time.After(10 * time.Second):
+	}
 }
 
 func postChat(ctx context.Context, c *http.Client) (*http.Response, error) {
@@ -166,17 +190,7 @@ func TestRelayUpstreamUnreachable(t *testing.T) {
 // A stalled upstream is cut by the client going away; the record must say who
 // ended it rather than blaming the upstream.
 func TestRelayClientDisconnectDuringStall(t *testing.T) {
-	release := make(chan struct{})
-	c, ch := relayHarness(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseChunk)
-		w.(http.Flusher).Flush()
-		select {
-		case <-release:
-		case <-r.Context().Done():
-		}
-	})
-	defer close(release)
+	c, ch := relayHarness(t, func(w http.ResponseWriter, r *http.Request) { stallUntilAbandoned(w, r, nil) })
 	ctx, cancel := context.WithCancel(context.Background())
 	res, err := postChat(ctx, c)
 	if err != nil {
@@ -185,7 +199,7 @@ func TestRelayClientDisconnectDuringStall(t *testing.T) {
 	buf := make([]byte, 16)
 	res.Body.Read(buf) // first event arrived, now stall
 	cancel()
-	if r := nextRecord(t, ch); r.End != "client_closed" || r.Finish != "" {
+	if r := nextRecord(t, ch); r.End != "client_closed" || r.Finish != "" || r.TeardownMS != nil {
 		t.Fatalf("stall/disconnect misattributed: %+v", r)
 	}
 }
@@ -203,5 +217,119 @@ func TestRelayCountsUnparseableEventsButKeepsStreaming(t *testing.T) {
 	r := nextRecord(t, ch)
 	if r.BadEvents != 1 || r.Finish != "stop" || r.End != "complete" {
 		t.Fatalf("malformed event mishandled: %+v", r)
+	}
+}
+
+func TestRelayRecordsWhereTheTimeWent(t *testing.T) {
+	c, ch := relayHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		time.Sleep(300 * time.Millisecond) // headers and first event arrive together, late
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseChunk)
+		w.(http.Flusher).Flush()
+		time.Sleep(250 * time.Millisecond)
+		fmt.Fprint(w, sseStop, "data: [DONE]\n\n")
+	})
+	res, err := postChat(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(res.Body)
+	r := nextRecord(t, ch)
+	if r.HeadersMS == nil || r.FirstByteMS == nil || r.LastByteMS == nil {
+		t.Fatalf("missing timings: %+v", r)
+	}
+	if *r.HeadersMS < 250 || *r.FirstByteMS < *r.HeadersMS || *r.LastByteMS < *r.FirstByteMS+200 {
+		t.Fatalf("timings do not match the upstream's behavior: headers=%d first=%d last=%d", *r.HeadersMS, *r.FirstByteMS, *r.LastByteMS)
+	}
+	want := len(sseChunk) + len(sseStop) + len("data: [DONE]\n\n")
+	if r.ResponseBytes != want || r.TeardownMS != nil || r.End != "complete" {
+		t.Fatalf("unexpected record: %+v (want %d response bytes)", r, want)
+	}
+}
+
+// Whether the engine sends response headers before the first token is an open
+// question about SGLang. The record must tell the two apart.
+func TestRelayTellsEarlyHeadersFromAFirstByteThatComesLate(t *testing.T) {
+	c, ch := relayHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		w.(http.Flusher).Flush()
+		time.Sleep(450 * time.Millisecond)
+		fmt.Fprint(w, sseChunk, sseStop, "data: [DONE]\n\n")
+	})
+	res, err := postChat(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.ReadAll(res.Body)
+	r := nextRecord(t, ch)
+	if r.HeadersMS == nil || r.FirstByteMS == nil || *r.HeadersMS > 250 || *r.FirstByteMS < 400 {
+		t.Fatalf("early headers not distinguished from a late first byte: %+v", r)
+	}
+}
+
+// The record must separate "the harness tore this down" from "the client went away".
+func TestRelayMarksHarnessInducedTeardown(t *testing.T) {
+	stalled := make(chan struct{})
+	c, ch, _, mark := relayWithControl(t, func(w http.ResponseWriter, r *http.Request) {
+		stallUntilAbandoned(w, r, func() { close(stalled) })
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	res, err := postChat(ctx, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Read(make([]byte, 16))
+	<-stalled
+	mark()   // the harness decides to cancel the attempt ...
+	cancel() // ... and the client connection goes away
+	r := nextRecord(t, ch)
+	if r.End != "client_closed" || r.TeardownMS == nil || *r.TeardownMS < 0 || *r.TeardownMS > r.ElapsedMS {
+		t.Fatalf("harness teardown not recorded with a usable time: %+v", r)
+	}
+}
+
+// stop must not return before in-flight requests have recorded how they ended. The
+// observer is slow on purpose: without the wait inside stop, the record would not be
+// there yet when stop returns, so this fails deterministically instead of by race.
+func TestRelayStopDeliversTheRecordBeforeReturning(t *testing.T) {
+	stalled := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stallUntilAbandoned(w, r, func() { close(stalled) })
+	}))
+	t.Cleanup(up.Close)
+	dir, err := os.MkdirTemp("/tmp", "sr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	records := make(chan qualRequest, 1)
+	stop, _, _, err := benchRelayTeardown(dir, uint16(up.Listener.Addr().(*net.TCPAddr).Port), "", "m", true, func(r qualRequest) {
+		time.Sleep(300 * time.Millisecond)
+		records <- r
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "inference.sock")
+	c := &http.Client{Transport: &http.Transport{DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	}}}
+	res, err := postChat(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Read(make([]byte, 16))
+	<-stalled
+	stop()
+	select {
+	case r := <-records:
+		if r.TeardownMS == nil || r.End != "client_closed" {
+			t.Fatalf("unexpected record after stop: %+v", r)
+		}
+	default:
+		t.Fatal("stop returned before the in-flight request recorded its end")
 	}
 }

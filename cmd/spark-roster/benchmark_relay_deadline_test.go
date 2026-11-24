@@ -195,3 +195,40 @@ req.end(body);setTimeout(()=>{console.log(JSON.stringify({ended:'hang'}));proces
 		})
 	}
 }
+
+// If the read deadline ever cancels a request's context while its client is still
+// connected, the failure must be loud. Emulate the relay as it was before the body
+// drain and check the client sees an error, not a clean end that looks finished.
+func TestRelayDeadlineCancelIsLoudNotSilent(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	old := relayDrainBody
+	relayDrainBody = false
+	t.Cleanup(func() { relayDrainBody = old })
+	runner, _ := filepath.Abs("pi-bench/runner.cjs")
+	sock, records := deadlineHarness(t, 600*time.Millisecond, slowUpstream(1500*time.Millisecond))
+	script := `const http=require('http');const {startRelay}=require(process.argv[1]);
+(async()=>{const relay=await startRelay(process.argv[2],0);
+const body=JSON.stringify({max_tokens:16384,messages:[{role:'user',content:'hi'}]});
+const req=http.request({host:'127.0.0.1',port:relay.address().port,path:'/v1/chat/completions',method:'POST',headers:{'content-type':'application/json','content-length':Buffer.byteLength(body)}},res=>{
+ let n=0,done=false;res.on('data',d=>{n+=d.length;if(String(d).includes('[DONE]'))done=true});
+ const fin=o=>{console.log(JSON.stringify({...o,bytes:n,done}));process.exit(0)};
+ res.on('end',()=>fin({ended:'end',complete:res.complete}));res.on('error',e=>fin({ended:'error',code:e.code}));
+ res.on('close',()=>{if(!res.complete)fin({ended:'closed_early'})});});
+req.on('error',e=>{console.log(JSON.stringify({ended:'request_error',code:e.code}));process.exit(0)});
+req.end(body);setTimeout(()=>{console.log(JSON.stringify({ended:'hang'}));process.exit(0)},8000);})();`
+	out, err := exec.Command(node, "-e", script, runner, sock).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, out)
+	}
+	rec := <-records
+	t.Logf("unfixed relay, client: %s | relay end=%q", strings.TrimSpace(string(out)), rec.End)
+	if rec.End != "client_closed" {
+		t.Fatalf("the pre-fix mechanism no longer reproduces (relay end=%q): this Go version changed net/http's body handling, so re-derive the bug before trusting the relay", rec.End)
+	}
+	if strings.Contains(string(out), `"ended":"end"`) && strings.Contains(string(out), `"complete":true`) {
+		t.Fatalf("a cancelled context ended the stream cleanly, indistinguishable from a finished one: %s", strings.TrimSpace(string(out)))
+	}
+}
