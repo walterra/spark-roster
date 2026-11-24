@@ -49,13 +49,18 @@ type benchReport struct {
 	TaskCount     int           `json:"task_count,omitempty"`
 	TaskLimitSec  int           `json:"task_timeout_seconds,omitempty"`
 	Repetitions   int           `json:"repetitions,omitempty"`
+	// Settings actually applied to servers and Pi, so a report states what was measured.
+	ServerContext int  `json:"server_context,omitempty"`
+	PiContext     int  `json:"pi_context,omitempty"`
+	PiOutputCap   int  `json:"pi_output_cap,omitempty"`
+	CanaryActive  bool `json:"canary_was_active,omitempty"`
 }
 
 var benchUsername = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,63}$`)
 
 func runBenchmark(args []string, out, diag io.Writer) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(out, "Usage: spark-roster benchmark stage|selftest|preflight|check|status|report|run OPERATOR|recover OPERATOR|qualify-preflight|qualify OPERATOR|qualify-status|qualify-recover OPERATOR")
+		fmt.Fprintln(out, "Usage: spark-roster benchmark stage|selftest|score-stock|preflight|check|status|report|run OPERATOR|recover OPERATOR|qualify-preflight|qualify OPERATOR|qualify-status|qualify-recover OPERATOR")
 		return 0
 	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" {
@@ -78,6 +83,12 @@ func runBenchmark(args []string, out, diag io.Writer) int {
 			self, stop := context.WithTimeout(ctx, 10*time.Minute)
 			defer stop()
 			err = withBenchLock(home, func() error { return runSelftest(self, out) })
+		}
+	case len(args) == 1 && args[0] == "score-stock" && os.Geteuid() != 0:
+		var home string
+		home, err = os.UserHomeDir()
+		if err == nil {
+			err = withBenchLock(home, func() error { return runScoreStock(ctx, home, out) })
 		}
 	case len(args) == 1 && args[0] == "telemetry-check":
 		err = checkBenchTelemetry(ctx, out)
@@ -217,19 +228,25 @@ func benchPreflight(ctx context.Context, home string) error {
 func writeBenchReport(r benchReport) error { return writeBenchmarkJSON("latest.json", r) }
 
 func writeBenchmarkJSON(name string, r any) error {
-	if err := os.MkdirAll(benchmarkState, 0755); err != nil {
+	return writeJSONAtomic(benchmarkState, 0755, 0644, name, r)
+}
+
+// writeJSONAtomic replaces dir/name with the JSON encoding of v. A reader sees either
+// the old file or the new one, never a partial write, and no temp file is left behind.
+func writeJSONAtomic(dir string, dirMode, fileMode os.FileMode, name string, v any) error {
+	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(benchmarkState, ".report-")
+	f, err := os.CreateTemp(dir, ".report-")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
 	defer f.Close()
-	if err = json.NewEncoder(f).Encode(r); err != nil {
+	if err = json.NewEncoder(f).Encode(v); err != nil {
 		return err
 	}
-	if err = f.Chmod(0644); err != nil {
+	if err = f.Chmod(fileMode); err != nil {
 		return err
 	}
 	if err = f.Sync(); err != nil {
@@ -238,15 +255,15 @@ func writeBenchmarkJSON(name string, r any) error {
 	if err = f.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(f.Name(), filepath.Join(benchmarkState, name)); err != nil {
+	if err = os.Rename(f.Name(), filepath.Join(dir, name)); err != nil {
 		return err
 	}
-	dir, err := os.Open(benchmarkState)
+	d, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
-	return dir.Sync()
+	defer d.Close()
+	return d.Sync()
 }
 
 func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr error) {
@@ -276,18 +293,33 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr 
 	if err != nil {
 		return err
 	}
-	r := benchReport{Schema: 2, Started: time.Now().UTC(), Operator: u.Username, OriginalImage: stockImage, Run: "running", Restoration: "pending", PiImage: image, Suite: suite, Repetitions: benchRepeats, TaskCount: len(tasks), TaskLimitSec: int(taskLimit / time.Second)}
+	r := benchReport{Schema: 2, Started: time.Now().UTC(), Operator: u.Username, OriginalImage: stockImage, Run: "running", Restoration: "pending", PiImage: image, Suite: suite, Repetitions: benchRepeats, TaskCount: len(tasks), TaskLimitSec: int(taskLimit / time.Second), ServerContext: scoredWindow, PiContext: scoredWindow, PiOutputCap: scoredOutput}
+	canary, err := qualCanaryState(ctx)
+	if err != nil {
+		return err
+	}
+	r.CanaryActive = canary
 	ctx, flush, err := startBenchTelemetry(ctx, "benchmark", r.Started, out, true)
 	if err != nil {
 		return err
 	}
 	defer flush()
-	benchEventAt(ctx, "run.start", map[string]any{"mode": "benchmark", "work_timeout_ms": benchmarkRunLimit.Milliseconds(), "task_timeout_ms": taskLimit.Milliseconds(), "server_stock_context": 262144, "server_candidate_context": 32768, "pi_context": 32768, "pi_output_cap": 4096, "pi_image": image, "suite": suite})
+	benchEventAt(ctx, "run.start", map[string]any{"mode": "benchmark", "work_timeout_ms": benchmarkRunLimit.Milliseconds(), "task_timeout_ms": taskLimit.Milliseconds(), "server_stock_context": 262144, "server_candidate_context": scoredWindow, "canary_was_active": canary, "pi_context": scoredWindow, "pi_output_cap": scoredOutput, "pi_image": image, "suite": suite})
 	defer func() {
 		benchEventAt(ctx, "run.end", map[string]any{"outcome": r.Run, "error_kind": benchErrorKind(runErr)})
 	}()
 	if err = writeBenchReport(r); err != nil {
 		return err
+	}
+	// The canary would add generation load to timed attempts. The report is written
+	// first, so an interruption between here and the end is restored by recover.
+	if err = command(ctx, out, "", "systemctl", "stop", canaryTimer, canaryService); err != nil {
+		return err
+	}
+	for _, unit := range []string{canaryTimer, canaryService} {
+		if err = confirmedInactive(ctx, unit); err != nil {
+			return err
+		}
 	}
 	pi, ink := benchPaths(u.HomeDir)
 	targets := []struct {
@@ -296,9 +328,11 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr 
 		switchTo       func(context.Context) error
 	}{
 		{"stock-qwen", "qwen3.8-27b", strings.TrimSpace(string(key)), 30001, nil},
-		{"pi-q8", "qwen3.8-pi", "", piPort, func(c context.Context) error { return switchPiQ8(c, u.HomeDir, pi, benchmarkPiLifetime, out) }},
+		{"pi-q8", "qwen3.8-pi", "", piPort, func(c context.Context) error {
+			return switchPiQ8Window(c, u.HomeDir, pi, benchmarkPiLifetime, scoredWindow, out)
+		}},
 		{"inkling-2-mini", inklingModel, "", inklingPort, func(c context.Context) error {
-			return handoffBenchmark(c, func(c context.Context) error { return stopPiQ8(c, out) }, func(c context.Context) error { return launchInkling(c, ink, 32768, out) })
+			return handoffBenchmark(c, func(c context.Context) error { return stopPiQ8(c, out) }, func(c context.Context) error { return launchInkling(c, ink, scoredWindow, out) })
 		}},
 	}
 	for i, t := range targets {
@@ -310,7 +344,7 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr 
 			return measureBenchProfile(c, &res, t.port, t.model, t.key, t.switchTo, func(phase context.Context) error {
 				for rep := 1; rep <= benchRepeats; rep++ {
 					for _, task := range tasks {
-						result, err := runPiTask(phase, image, t.model, t.key, t.port, task, rep)
+						result, err := runPiTaskScored(phase, image, t.model, t.key, t.port, task, rep)
 						fmt.Fprintf(out, "%s %s #%d: %s\n", t.id, task.ID, rep, result.Outcome)
 						res.Tasks = append(res.Tasks, result)
 						r.Profiles[i] = res
@@ -380,6 +414,16 @@ func recoverBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
 	}
 	if err == nil {
 		err = benchStockIdentity(ctx)
+	}
+	if err == nil && r.CanaryActive {
+		err = command(ctx, out, "", "systemctl", "start", canaryTimer)
+	}
+	if err == nil {
+		var active bool
+		active, err = qualCanaryState(ctx)
+		if err == nil && active != r.CanaryActive {
+			err = errors.New("canary state not restored")
+		}
 	}
 	if err != nil {
 		r.Restoration = "failed"

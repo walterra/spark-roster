@@ -404,7 +404,11 @@ func restoreAuthorized(ctx context.Context, home string, out io.Writer) error {
 	fmt.Fprintln(out, "Stock Qwen restored; authenticated generation verified.")
 	return nil
 }
-func switchPiQ8(ctx context.Context, home, base string, lifetime time.Duration, out io.Writer) (err error) {
+func switchPiQ8(ctx context.Context, home, base string, lifetime time.Duration, out io.Writer) error {
+	return switchPiQ8Window(ctx, home, base, lifetime, 32768, out)
+}
+
+func switchPiQ8Window(ctx context.Context, home, base string, lifetime time.Duration, window int, out io.Writer) (err error) {
 	u, e := operatorForHome(home)
 	if e != nil {
 		return e
@@ -455,7 +459,7 @@ func switchPiQ8(ctx context.Context, home, base string, lifetime time.Duration, 
 	if e != nil || running != "" {
 		return fmt.Errorf("stock Docker exit not confirmed")
 	}
-	return launchPiQ8(ctx, u, exe, weights, lifetime, 32768, out)
+	return launchPiQ8(ctx, u, exe, weights, lifetime, window, out)
 }
 
 func launchPiQ8(ctx context.Context, u *user.User, exe, weights string, lifetime time.Duration, window int, out io.Writer) error {
@@ -468,7 +472,7 @@ func launchPiQ8(ctx context.Context, u *user.User, exe, weights string, lifetime
 	if e := command(ctx, out, "", "sudo", "-n", "systemd-run", "--unit="+piUnit, "--uid="+u.Uid, "--gid="+u.Gid, "--property=MemoryMax=48G", "--property=MemorySwapMax=0", fmt.Sprintf("--property=RuntimeMaxSec=%ds", int64(lifetime/time.Second)), "--property=KillMode=control-group", "--property=Type=exec", "--", exe, "--model", weights, "--alias", "qwen3.8-pi", "--host", "127.0.0.1", "--port", "9931", "--ctx-size", fmt.Sprint(window), "--parallel", "1", "--gpu-layers", "all", "--jinja", "--reasoning", "off"); e != nil {
 		return e
 	}
-	startup, stop := context.WithTimeout(ctx, 4*time.Minute)
+	startup, stop := context.WithTimeout(ctx, piStartupBudget)
 	defer stop()
 	if e := waitGeneration(startup, func(p context.Context) error { return trial.CheckGeneration(p, piPort, "qwen3.8-pi", "") }, 10*trialGiB); e != nil {
 		return e

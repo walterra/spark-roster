@@ -38,18 +38,23 @@ type piTask struct {
 	Attachment          string `json:"-"`
 }
 type piResult struct {
-	Diagnostic       string `json:"diagnostic,omitempty"`
-	Task             string `json:"task"`
-	Repetition       int    `json:"repetition"`
-	Outcome          string `json:"outcome"`
-	WallMS           int64  `json:"agent_wall_ms"`
-	Requests         int64  `json:"inference_requests"`
-	ToolCalls        int    `json:"tool_calls"`
-	PromptTokens     int    `json:"reported_prompt_tokens"`
-	PeakPrompt       int    `json:"peak_reported_prompt_tokens,omitempty"`
-	Compactions      int    `json:"compactions,omitempty"`
-	CompletionTokens int    `json:"reported_completion_tokens"`
-	Grade            string `json:"grade,omitempty"`
+	Diagnostic string `json:"diagnostic,omitempty"`
+	// Relay is the host relay's record of each chat request in this attempt: what the
+	// upstream answered and why each exchange ended.
+	Relay            []qualRequest `json:"relay,omitempty"`
+	Task             string        `json:"task"`
+	Repetition       int           `json:"repetition"`
+	Outcome          string        `json:"outcome"`
+	WallMS           int64         `json:"agent_wall_ms"`
+	Requests         int64         `json:"inference_requests"`
+	ToolCalls        int           `json:"tool_calls"`
+	PromptTokens     int           `json:"reported_prompt_tokens"`
+	PeakPrompt       int           `json:"peak_reported_prompt_tokens,omitempty"`
+	Compactions      int           `json:"compactions,omitempty"`
+	CompletionTokens int           `json:"reported_completion_tokens"`
+	Grade            string        `json:"grade,omitempty"`
+	// Evidence is kept for every attempt that did not pass.
+	Evidence *piEvidence `json:"evidence,omitempty"`
 }
 
 func benchInputs() (string, []piTask, error) {
@@ -363,6 +368,12 @@ func collectPiEvents(r io.Reader, res *piResult) (bool, error) {
 	return end, scanner.Err()
 }
 
+// runPiTaskScored runs one scored attempt at the context-aligned settings: the full
+// 262,144-token window and a 16,384-token output cap.
+func runPiTaskScored(ctx context.Context, image, model, key string, port uint16, task piTask, rep int) (piResult, error) {
+	return runPiTaskWithLimits(ctx, image, model, key, port, task, rep, scoredWindow, scoredOutput, nil)
+}
+
 func runPiTask(ctx context.Context, image, model, key string, port uint16, task piTask, rep int) (piResult, error) {
 	return runPiTaskWithLimits(ctx, image, model, key, port, task, rep, 32768, 4096, nil)
 }
@@ -390,6 +401,18 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 	if err = os.Chmod(filepath.Join(work, "solution.cjs"), 0666); err != nil {
 		return res, err
 	}
+	var graded *piEvidence
+	defer func() {
+		if res.Outcome == "pass" {
+			return
+		}
+		ev := graded
+		if ev == nil {
+			ev = &piEvidence{}
+		}
+		ev.Solution, ev.SolutionBytes = readSolution(work)
+		res.Evidence = ev
+	}()
 	clean := func() error {
 		c, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -451,6 +474,10 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 	stop()
 	res.WallMS = time.Since(start).Milliseconds()
 	res.Requests = requests.Load()
+	// stop() above waited for in-flight requests to record how they ended.
+	relayMu.Lock()
+	res.Relay = append([]qualRequest(nil), relayLog...)
+	relayMu.Unlock()
 	if err = clean(); err != nil {
 		return res, err
 	}
@@ -476,7 +503,7 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 		}
 		return res, nil
 	}
-	res.Grade, err = gradePiTask(ctx, image, work, task)
+	res.Grade, graded, err = gradePiTaskDetail(ctx, image, work, task)
 	if err != nil {
 		return res, err
 	}
@@ -485,53 +512,6 @@ func runPiTaskWithLimits(ctx context.Context, image, model, key string, port uin
 		res.Outcome = "pass"
 	}
 	return res, nil
-}
-
-func gradePiTask(ctx context.Context, image, work string, task piTask) (string, error) {
-	grade, done := context.WithTimeout(ctx, 15*time.Second)
-	defer done()
-	input := fmt.Sprintf(`{"immutable":%t,"cases":%s}`, task.Immutable, task.Cases)
-	gradeArgs := append(benchDockerArgs(work, true), image, "/opt/bench/runner.cjs", "grade", input)
-	cmd := exec.CommandContext(grade, "docker", gradeArgs...)
-	var diagnostic bytes.Buffer
-	cmd.Stderr = &benchDiagnostic{buf: &diagnostic}
-	pipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", err
-	}
-	if err = cmd.Start(); err != nil {
-		return "", err
-	}
-	data, err := io.ReadAll(io.LimitReader(pipe, 64<<10))
-	if len(data) == 64<<10 || err != nil {
-		done()
-	}
-	waitErr := cmd.Wait()
-	c, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err = cleanupBenchContainer(c); err != nil {
-		return "", err
-	}
-	if ctx.Err() != nil {
-		return "", ctx.Err()
-	}
-	if grade.Err() != nil {
-		return "grader_deadline_or_output_limit", nil
-	}
-	var exit *exec.ExitError
-	if errors.As(waitErr, &exit) && (exit.ExitCode() == 125 || exit.ExitCode() == 126 || exit.ExitCode() == 127) {
-		return "", fmt.Errorf("grader container failed: %w", waitErr)
-	}
-	if waitErr != nil {
-		if task.ID == "reference" {
-			return "", fmt.Errorf("reference: %s (%w)", strings.TrimSpace(diagnostic.String()), waitErr)
-		}
-		return "submission_error", nil
-	}
-	if sameJSON(data, task.Want) {
-		return "pass", nil
-	}
-	return "incorrect_output", nil
 }
 
 type benchDiagnostic struct{ buf *bytes.Buffer }

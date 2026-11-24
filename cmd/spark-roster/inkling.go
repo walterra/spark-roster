@@ -296,7 +296,7 @@ func launchInkling(ctx context.Context, base string, window int, out io.Writer) 
 	}
 	var minimum atomic.Uint64
 	minimum.Store(m.Available)
-	startup, stop := context.WithTimeout(ctx, 9*time.Minute)
+	startup, stop := context.WithTimeout(ctx, inklingStartupBudget)
 	defer stop()
 	sampled := make(chan struct{})
 	go func() {
