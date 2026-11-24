@@ -132,6 +132,10 @@ func cleanupBenchContainer(ctx context.Context) error {
 	return nil
 }
 
+// relayReadTimeout bounds reading a request. It is a variable only so a test can
+// shorten it; production keeps 15 s.
+var relayReadTimeout = 15 * time.Second
+
 // benchRelay forwards Pi's chat requests to the active endpoint. qual selects the
 // qualification limits. observe, when set, receives one record per request saying
 // how the upstream ended; a stream that stops before a terminal event is aborted so
@@ -148,7 +152,7 @@ func benchRelay(dir string, port uint16, key, model string, qual bool, observe f
 	}
 	var requests atomic.Int64
 	tr := &http.Transport{DisableKeepAlives: true}
-	server := &http.Server{ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 15 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := &http.Server{ReadHeaderTimeout: 3 * time.Second, ReadTimeout: relayReadTimeout, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" || r.URL.RequestURI() != "/v1/chat/completions" {
 			http.NotFound(w, r)
 			return
@@ -163,8 +167,18 @@ func benchRelay(dir string, port uint16, key, model string, qual bool, observe f
 		}
 		defer r.Body.Close()
 		var payload map[string]json.RawMessage
-		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20))
+		limited := http.MaxBytesReader(w, r.Body, 4<<20)
+		d := json.NewDecoder(limited)
 		if d.Decode(&payload) != nil || payload == nil {
+			http.Error(w, "invalid request", 400)
+			return
+		}
+		// Read the body to its end before the upstream call. net/http clears the
+		// read deadline and starts watching for a client disconnect only at EOF.
+		// Until then the server's ReadTimeout stays armed, and on the first response
+		// write net/http tries to discard the unread body, fails on the expired
+		// deadline, and cancels this request's context mid-stream.
+		if _, err := io.Copy(io.Discard, limited); err != nil {
 			http.Error(w, "invalid request", 400)
 			return
 		}
