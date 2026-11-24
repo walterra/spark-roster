@@ -49,6 +49,7 @@ type benchReport struct {
 	TaskCount     int           `json:"task_count,omitempty"`
 	TaskLimitSec  int           `json:"task_timeout_seconds,omitempty"`
 	Repetitions   int           `json:"repetitions,omitempty"`
+	Mode          string        `json:"mode,omitempty"`
 	// Settings actually applied to servers and Pi, so a report states what was measured.
 	ServerContext int  `json:"server_context,omitempty"`
 	PiContext     int  `json:"pi_context,omitempty"`
@@ -60,7 +61,7 @@ var benchUsername = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,63}$`)
 
 func runBenchmark(args []string, out, diag io.Writer) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(out, "Usage: spark-roster benchmark stage|selftest|score-stock|preflight|check|status|report|run OPERATOR|recover OPERATOR|qualify-preflight|qualify OPERATOR|qualify-status|qualify-recover OPERATOR")
+		fmt.Fprintln(out, "Usage: spark-roster benchmark stage|selftest|score-stock|preflight|check|status|report|run OPERATOR|gate OPERATOR|recover OPERATOR|qualify-preflight|qualify OPERATOR|qualify-status|qualify-recover OPERATOR")
 		return 0
 	}
 	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" {
@@ -120,7 +121,7 @@ func runBenchmark(args []string, out, diag io.Writer) int {
 				err = json.NewEncoder(out).Encode(r)
 			}
 		}
-	case len(args) == 2 && (args[0] == "run" || args[0] == "recover") && os.Geteuid() == 0 && benchUsername.MatchString(args[1]):
+	case len(args) == 2 && (args[0] == "run" || args[0] == "gate" || args[0] == "recover") && os.Geteuid() == 0 && benchUsername.MatchString(args[1]):
 		var u *user.User
 		u, err = user.Lookup(args[1])
 		if err != nil {
@@ -130,7 +131,7 @@ func runBenchmark(args []string, out, diag io.Writer) int {
 			err = errors.New("invalid benchmark operator")
 			break
 		}
-		if args[0] == "run" && os.Getenv("INVOCATION_ID") == "" {
+		if (args[0] == "run" || args[0] == "gate") && os.Getenv("INVOCATION_ID") == "" {
 			err = errors.New("run under systemd with the ExecStopPost recovery hook from the runbook")
 			break
 		}
@@ -139,6 +140,11 @@ func runBenchmark(args []string, out, diag io.Writer) int {
 				r, c := context.WithTimeout(ctx, 16*time.Minute)
 				defer c()
 				return recoverBenchmark(r, u, out)
+			}
+			if args[0] == "gate" {
+				g, c := context.WithTimeout(ctx, gateRunLimit)
+				defer c()
+				return executeBenchmarkMode(g, u, out, true)
 			}
 			return executeBenchmark(ctx, u, out)
 		})
@@ -266,7 +272,18 @@ func writeJSONAtomic(dir string, dirMode, fileMode os.FileMode, name string, v a
 	return d.Sync()
 }
 
-func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr error) {
+// gateRunLimit bounds the 256K gate: Pi Q8 and Inkling each get one launch (4 + 9 min
+// startup budgets), one speed set (at most 6 requests of 2 min), and one scored task
+// (10 min); stock restore is budgeted at 9 min. That sums to 66 min; 90 min leaves margin.
+const gateRunLimit = 90 * time.Minute
+
+func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) error {
+	return executeBenchmarkMode(ctx, u, out, false)
+}
+
+// executeBenchmarkMode runs the scored comparison, or with gate set a short check of
+// the candidate profiles at the scored settings: one task, one repetition, no stock run.
+func executeBenchmarkMode(ctx context.Context, u *user.User, out io.Writer, gate bool) (runErr error) {
 	if err := qualificationSettled(); err != nil {
 		return err
 	}
@@ -293,18 +310,22 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr 
 	if err != nil {
 		return err
 	}
-	r := benchReport{Schema: 2, Started: time.Now().UTC(), Operator: u.Username, OriginalImage: stockImage, Run: "running", Restoration: "pending", PiImage: image, Suite: suite, Repetitions: benchRepeats, TaskCount: len(tasks), TaskLimitSec: int(taskLimit / time.Second), ServerContext: scoredWindow, PiContext: scoredWindow, PiOutputCap: scoredOutput}
+	mode, repeats := "benchmark", benchRepeats
+	if gate {
+		mode, repeats, tasks = "gate", 1, tasks[:1]
+	}
+	r := benchReport{Schema: 2, Started: time.Now().UTC(), Operator: u.Username, OriginalImage: stockImage, Run: "running", Restoration: "pending", PiImage: image, Suite: suite, Repetitions: repeats, Mode: mode, TaskCount: len(tasks), TaskLimitSec: int(taskLimit / time.Second), ServerContext: scoredWindow, PiContext: scoredWindow, PiOutputCap: scoredOutput}
 	canary, err := qualCanaryState(ctx)
 	if err != nil {
 		return err
 	}
 	r.CanaryActive = canary
-	ctx, flush, err := startBenchTelemetry(ctx, "benchmark", r.Started, out, true)
+	ctx, flush, err := startBenchTelemetry(ctx, mode, r.Started, out, true)
 	if err != nil {
 		return err
 	}
 	defer flush()
-	benchEventAt(ctx, "run.start", map[string]any{"mode": "benchmark", "work_timeout_ms": benchmarkRunLimit.Milliseconds(), "task_timeout_ms": taskLimit.Milliseconds(), "server_stock_context": 262144, "server_candidate_context": scoredWindow, "canary_was_active": canary, "pi_context": scoredWindow, "pi_output_cap": scoredOutput, "pi_image": image, "suite": suite})
+	benchEventAt(ctx, "run.start", map[string]any{"mode": mode, "work_timeout_ms": benchmarkRunLimit.Milliseconds(), "task_timeout_ms": taskLimit.Milliseconds(), "server_stock_context": 262144, "server_candidate_context": scoredWindow, "canary_was_active": canary, "pi_context": scoredWindow, "pi_output_cap": scoredOutput, "pi_image": image, "suite": suite})
 	defer func() {
 		benchEventAt(ctx, "run.end", map[string]any{"outcome": r.Run, "error_kind": benchErrorKind(runErr)})
 	}()
@@ -335,6 +356,9 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr 
 			return handoffBenchmark(c, func(c context.Context) error { return stopPiQ8(c, out) }, func(c context.Context) error { return launchInkling(c, ink, scoredWindow, out) })
 		}},
 	}
+	if gate {
+		targets = targets[1:]
+	}
 	for i, t := range targets {
 		fmt.Fprintln(out, "benchmark profile:", t.id)
 		profileCtx := benchFields(ctx, map[string]any{"profile": t.id})
@@ -342,7 +366,7 @@ func executeBenchmark(ctx context.Context, u *user.User, out io.Writer) (runErr 
 		r.Profiles = append(r.Profiles, res)
 		err = benchPhase(profileCtx, "profile", func(c context.Context) error {
 			return measureBenchProfile(c, &res, t.port, t.model, t.key, t.switchTo, func(phase context.Context) error {
-				for rep := 1; rep <= benchRepeats; rep++ {
+				for rep := 1; rep <= repeats; rep++ {
 					for _, task := range tasks {
 						result, err := runPiTaskScored(phase, image, t.model, t.key, t.port, task, rep)
 						fmt.Fprintf(out, "%s %s #%d: %s\n", t.id, task.ID, rep, result.Outcome)
