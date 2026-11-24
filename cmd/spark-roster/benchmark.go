@@ -343,22 +343,13 @@ func executeBenchmarkMode(ctx context.Context, u *user.User, out io.Writer, gate
 		}
 	}
 	pi, ink := benchPaths(u.HomeDir)
-	targets := []struct {
-		id, model, key string
-		port           uint16
-		switchTo       func(context.Context) error
-	}{
-		{"stock-qwen", "qwen3.8-27b", strings.TrimSpace(string(key)), 30001, nil},
-		{"pi-q8", "qwen3.8-pi", "", piPort, func(c context.Context) error {
-			return switchPiQ8Window(c, u.HomeDir, pi, benchmarkPiLifetime, scoredWindow, out)
-		}},
-		{"inkling-2-mini", inklingModel, "", inklingPort, func(c context.Context) error {
-			return handoffBenchmark(c, func(c context.Context) error { return stopPiQ8(c, out) }, func(c context.Context) error { return launchInkling(c, ink, scoredWindow, out) })
-		}},
-	}
-	if gate {
-		targets = targets[1:]
-	}
+	targets := benchTargets(benchSwitches{
+		switchPi: func(c context.Context, window int) error {
+			return switchPiQ8Window(c, u.HomeDir, pi, benchmarkPiLifetime, window, out)
+		},
+		stopPi:        func(c context.Context) error { return stopPiQ8(c, out) },
+		launchInkling: func(c context.Context, window int) error { return launchInkling(c, ink, window, out) },
+	}, strings.TrimSpace(string(key)), gate)
 	for i, t := range targets {
 		fmt.Fprintln(out, "benchmark profile:", t.id)
 		profileCtx := benchFields(ctx, map[string]any{"profile": t.id})
@@ -395,6 +386,36 @@ func executeBenchmarkMode(ctx context.Context, u *user.User, out io.Writer, gate
 	}
 	r.Run = "completed"
 	return writeBenchReport(r)
+}
+
+type benchTarget struct {
+	id, model, key string
+	port           uint16
+	switchTo       func(context.Context) error
+}
+
+// benchSwitches are the service transitions a run performs, injectable for tests.
+type benchSwitches struct {
+	switchPi      func(ctx context.Context, window int) error
+	stopPi        func(context.Context) error
+	launchInkling func(ctx context.Context, window int) error
+}
+
+// benchTargets is the profile order of a run: stock, Pi Q8, Inkling. A gate skips
+// stock. Every candidate launches at the scored window, and Inkling only after Pi Q8
+// has been confirmed stopped.
+func benchTargets(sw benchSwitches, stockKey string, gate bool) []benchTarget {
+	t := []benchTarget{
+		{"stock-qwen", "qwen3.8-27b", stockKey, 30001, nil},
+		{"pi-q8", "qwen3.8-pi", "", piPort, func(c context.Context) error { return sw.switchPi(c, scoredWindow) }},
+		{"inkling-2-mini", inklingModel, "", inklingPort, func(c context.Context) error {
+			return handoffBenchmark(c, sw.stopPi, func(c context.Context) error { return sw.launchInkling(c, scoredWindow) })
+		}},
+	}
+	if gate {
+		return t[1:]
+	}
+	return t
 }
 
 func handoffBenchmark(ctx context.Context, stop, launch func(context.Context) error) error {
