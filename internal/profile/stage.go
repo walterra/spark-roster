@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -37,8 +38,44 @@ func (s *Stager) logf(format string, a ...any) {
 	}
 }
 
-// Need returns the bytes still to be downloaded for an artifact, so staging can
-// check disk space before it starts. Images are estimated by the profile.
+// ArtifactPlan says what staging one artifact still has to do.
+type ArtifactPlan struct {
+	Kind      string `json:"kind"`
+	Name      string `json:"name"`
+	Present   bool   `json:"present"`
+	NeedBytes int64  `json:"need_bytes"`
+	// Path is the directory whose free space the download needs.
+	Path string `json:"path,omitempty"`
+	Note string `json:"note,omitempty"`
+}
+
+// StagePlan is what Stage would do, computed without changing anything.
+type StagePlan struct {
+	Profile   string         `json:"profile"`
+	Artifacts []ArtifactPlan `json:"artifacts"`
+	// NeedBytes counts files still to download. ImageBytes is the compressed
+	// size of images still to pull; Docker's own storage is not checked here.
+	NeedBytes    int64  `json:"need_bytes"`
+	ImageBytes   int64  `json:"image_bytes"`
+	ReserveBytes uint64 `json:"reserve_bytes"`
+	Enough       bool   `json:"enough_space"`
+	Shortfall    string `json:"shortfall,omitempty"`
+}
+
+func (s *Stager) imagePresent(ctx context.Context, a Artifact) bool {
+	ref := a.Name
+	if !strings.Contains(ref, "@") {
+		ref += "@" + strings.TrimPrefix(a.Revision, "@")
+	}
+	if out, err := s.Output(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", ref); err == nil && out != "" {
+		return true
+	}
+	// A local image has no repository digest; its content id is the pin.
+	out, err := s.Output(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", a.Revision)
+	return err == nil && out != ""
+}
+
+// Need returns the bytes still to be downloaded for an artifact.
 func (s *Stager) Need(a Artifact) (int64, error) {
 	var total int64
 	switch a.Kind {
@@ -62,38 +99,76 @@ func (s *Stager) Need(a Artifact) (int64, error) {
 	return total, nil
 }
 
+// Plan reports, per artifact, what is missing and whether the disks can hold it.
+// Free space is checked per directory, so two artifacts on different
+// filesystems are not pooled; two on one filesystem are each checked alone.
+func (s *Stager) Plan(ctx context.Context, p Profile) (StagePlan, error) {
+	plan := StagePlan{Profile: p.ID, ReserveBytes: s.ReserveBytes, Enough: true}
+	perPath := map[string]int64{}
+	for _, a := range p.Artifacts {
+		ap := ArtifactPlan{Kind: a.Kind, Name: a.Name}
+		switch a.Kind {
+		case "image":
+			ap.Present = s.imagePresent(ctx, a)
+			if !ap.Present {
+				plan.ImageBytes += a.Bytes
+				ap.Note = "pulled into Docker's storage; free space there is not checked here"
+			}
+		case "git":
+			_, err := s.Stat(a.Creates)
+			ap.Present = a.Creates != "" && err == nil
+		default:
+			n, err := s.Need(a)
+			if err != nil {
+				return plan, err
+			}
+			ap.NeedBytes, ap.Present = n, n == 0
+			switch {
+			case a.Kind == "huggingface" && a.Dest != "":
+				ap.Path = a.Dest
+			case a.Kind == "huggingface":
+				ap.Path = s.HFCache
+			default:
+				ap.Path = filepath.Dir(a.Name)
+			}
+			plan.NeedBytes += n
+			perPath[ap.Path] += n
+		}
+		plan.Artifacts = append(plan.Artifacts, ap)
+	}
+	paths := make([]string, 0, len(perPath))
+	for path := range perPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		need := perPath[path]
+		if need == 0 {
+			continue
+		}
+		free, err := s.Available(existingParent(path))
+		if err != nil {
+			return plan, fmt.Errorf("check free space at %s: %w", path, err)
+		}
+		if free < uint64(need)+s.ReserveBytes {
+			plan.Enough = false
+			plan.Shortfall = fmt.Sprintf("%s needs %.1f GiB plus a %.1f GiB reserve; %.1f GiB free at %s",
+				p.ID, float64(need)/(1<<30), float64(s.ReserveBytes)/(1<<30), float64(free)/(1<<30), path)
+			break
+		}
+	}
+	return plan, nil
+}
+
 // Stage makes every artifact present and verified, then returns. It is safe to
 // repeat: finished artifacts are skipped and partial downloads resume.
 func (s *Stager) Stage(ctx context.Context, p Profile) error {
-	var need int64
-	for _, a := range p.Artifacts {
-		n, err := s.Need(a)
-		if err != nil {
-			return err
-		}
-		need += n
+	plan, err := s.Plan(ctx, p)
+	if err != nil {
+		return err
 	}
-	if need > 0 {
-		dir := s.HFCache
-		for _, a := range p.Artifacts {
-			if a.Kind == "url" {
-				dir = filepath.Dir(a.Name)
-			}
-			if a.Kind == "huggingface" && a.Dest != "" {
-				dir = a.Dest
-			}
-		}
-		if err := mkParent(dir); err != nil {
-			return err
-		}
-		free, err := s.Available(dir)
-		if err != nil {
-			return fmt.Errorf("check free space: %w", err)
-		}
-		if free < uint64(need)+s.ReserveBytes {
-			return fmt.Errorf("staging %s needs %.1f GiB plus a %.1f GiB reserve; %.1f GiB free at %s",
-				p.ID, float64(need)/(1<<30), float64(s.ReserveBytes)/(1<<30), float64(free)/(1<<30), dir)
-		}
+	if !plan.Enough {
+		return errors.New(plan.Shortfall)
 	}
 	for _, a := range p.Artifacts {
 		s.logf("artifact %s %s", a.Kind, a.Name)
@@ -122,14 +197,16 @@ func (s *Stager) Stage(ctx context.Context, p Profile) error {
 	return nil
 }
 
-func mkParent(dir string) error {
+// existingParent returns the nearest existing ancestor of dir, whose
+// filesystem is the one a download into dir will fill.
+func existingParent(dir string) string {
 	for {
 		if _, err := os.Stat(dir); err == nil {
-			return nil
+			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return nil
+			return dir
 		}
 		dir = parent
 	}
@@ -215,12 +292,12 @@ func (s *Stager) fetch(ctx context.Context, u, dst string, size int64, sum strin
 }
 
 func (s *Stager) stageImage(ctx context.Context, a Artifact) error {
+	if s.imagePresent(ctx, a) {
+		return nil
+	}
 	ref := a.Name
 	if !strings.Contains(ref, "@") {
 		ref += "@" + strings.TrimPrefix(a.Revision, "@")
-	}
-	if out, err := s.Output(ctx, "docker", "image", "inspect", "--format", "{{.Id}}", ref); err == nil && out != "" {
-		return nil
 	}
 	return s.Run(ctx, "", "docker", "pull", "--platform=linux/arm64", ref)
 }

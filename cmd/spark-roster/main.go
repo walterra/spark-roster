@@ -18,8 +18,11 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, time.Now())) }
 
 func run(args []string, out, diag io.Writer, now time.Time) int {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(out, "Usage: spark-roster <plan|snapshot|memory|storage|inspect|profile draft|pi-q8|inkling|benchmark> [options]\nUse <command> --help for options.")
+		fmt.Fprintln(out, "Usage: spark-roster <list|status|doctor|stage|switch|stop|recover|version|plan|snapshot|memory|storage|inspect|profile draft|benchmark> [options]\nRun `spark-roster list` first. Use <command> --help for options.")
 		return 0
+	}
+	if code, ok := runManage(args, out, diag); ok {
+		return code
 	}
 	switch args[0] {
 	case "benchmark":

@@ -59,7 +59,7 @@ func NewHost(hfCache string) *Host {
 				}
 				key = strings.TrimSpace(string(b))
 			}
-			return trial.CheckGenerationTokens(ctx, p.Serving.Port, p.Serving.Model, key, 64)
+			return trial.CheckGenerationTokens(ctx, p.Serving.Port, p.Serving.Model, key, 1024)
 		},
 		Stat:    os.Stat,
 		HFCache: hfCache,
@@ -251,4 +251,62 @@ func HFDir(hfCache string, a Artifact) string {
 		return a.Dest
 	}
 	return filepath.Join(hfCache, "models--"+strings.ReplaceAll(a.Name, "/", "--"), "snapshots", a.Revision)
+}
+
+// UnitState is one systemd unit as the host reports it.
+type UnitState struct {
+	Unit   string `json:"unit"`
+	Load   string `json:"load_state"`
+	Active string `json:"active_state"`
+}
+
+// StateOf summarises a profile's units: running when every unit is active,
+// stopped when none is active or activating, partial otherwise, and missing
+// when a unit is not installed at all.
+func StateOf(units []UnitState) string {
+	if len(units) == 0 {
+		return "missing"
+	}
+	active, missing := 0, 0
+	for _, u := range units {
+		switch {
+		case u.Load != "loaded":
+			missing++
+		case u.Active == "active":
+			active++
+		}
+	}
+	switch {
+	case missing == len(units):
+		return "missing"
+	case active == len(units):
+		return "running"
+	case active == 0 && missing == 0:
+		return "stopped"
+	case active == 0:
+		return "stopped"
+	}
+	return "partial"
+}
+
+// Units reports the state of each of the profile's units.
+func (h *Host) Units(ctx context.Context, p Profile) ([]UnitState, error) {
+	var out []UnitState
+	for _, name := range p.Units() {
+		u, err := h.Inspect(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, UnitState{Unit: name, Load: u.LoadState, Active: u.ActiveState})
+	}
+	return out, nil
+}
+
+// SudoReady reports whether privileged systemctl calls will run without a
+// password prompt. It never prompts.
+func (h *Host) SudoReady(ctx context.Context) error {
+	if _, err := h.Output(ctx, "sudo", "-n", "true"); err != nil {
+		return errors.New("sudo needs a password. Run `sudo -v` in this terminal, then retry")
+	}
+	return nil
 }

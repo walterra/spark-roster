@@ -10,7 +10,8 @@
       "kind": "image",
       "name": "lmsysorg/sglang",
       "revision": "sha256:e3a4f06001a29542fc4a8638536d9ffc5eb9c9942b08603c09b19a56eae4a1ae",
-      "role": "runtime"
+      "role": "runtime",
+      "bytes": 15881505140
     },
     {
       "kind": "huggingface",
