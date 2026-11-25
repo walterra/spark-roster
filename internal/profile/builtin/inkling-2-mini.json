@@ -9,7 +9,8 @@
     {
       "kind": "image",
       "name": "lmsysorg/sglang",
-      "revision": "sha256:bc811ac7ac68c6fca116a49750baca817b8613a30abface8a347682b55d132e3"
+      "revision": "sha256:bc811ac7ac68c6fca116a49750baca817b8613a30abface8a347682b55d132e3",
+      "role": "runtime"
     },
     {
       "kind": "huggingface",
@@ -77,7 +78,8 @@
           "bytes": 13235
         }
       ],
-      "dest": "{data}/inkling-2-mini/b85c3cfa615fc413cc9af3379f491b963f3b586a"
+      "dest": "{data}/inkling-2-mini/b85c3cfa615fc413cc9af3379f491b963f3b586a",
+      "role": "model"
     }
   ],
   "launch": {
@@ -143,6 +145,7 @@
   "memory": {
     "start_min_available_bytes": 80530636800,
     "evidence": "estimated",
-    "note": "75 GiB is the start floor the Inkling trial used. Measured: minimum host MemAvailable 56.2-56.4 GiB at a 262,144-token window (2026-11-24 gate and full run); ready 336-361 s after start."
+    "note": "75 GiB is the start floor the Inkling trial used. Measured: minimum host MemAvailable 56.2-56.4 GiB at a 262,144-token window (2026-11-24 gate and full run); ready 336-361 s after start.",
+    "recorded_at": "2026-11-24T00:00:00Z"
   }
 }

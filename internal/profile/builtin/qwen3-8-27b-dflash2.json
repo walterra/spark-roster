@@ -9,7 +9,8 @@
     {
       "kind": "image",
       "name": "lmsysorg/sglang",
-      "revision": "sha256:e3a4f06001a29542fc4a8638536d9ffc5eb9c9942b08603c09b19a56eae4a1ae"
+      "revision": "sha256:e3a4f06001a29542fc4a8638536d9ffc5eb9c9942b08603c09b19a56eae4a1ae",
+      "role": "runtime"
     },
     {
       "kind": "huggingface",
@@ -108,7 +109,8 @@
           "path": "vocab.json",
           "bytes": 6722759
         }
-      ]
+      ],
+      "role": "model"
     },
     {
       "kind": "huggingface",
@@ -140,7 +142,8 @@
           "bytes": 1550153248,
           "sha256": "2228b9b22e93a88d84556419c879448ab6c490ae65c4c0b166f4962190ddbf26"
         }
-      ]
+      ],
+      "role": "drafter"
     }
   ],
   "launch": {
@@ -229,6 +232,7 @@
   "memory": {
     "start_min_available_bytes": 96636764160,
     "evidence": "estimated",
-    "note": "90 GiB is the floor the benchmark used before restoring the Qwen3.8-27B deployment on a 128 GiB GB10. SGLang reported 25.02 GB weights and a 10.12 GB KV pool at this static fraction; host MemAvailable was about 49 GiB after start (2026-09-17 post). Differences from the site's own deployment: no patched chat template, no API key (the engine listens on 127.0.0.1 only) and no keepalive proxy, so long silent tool calls reach the client unfiltered."
+    "note": "90 GiB is the floor the benchmark used before restoring the Qwen3.8-27B deployment on a 128 GiB GB10. SGLang reported 25.02 GB weights and a 10.12 GB KV pool at this static fraction; host MemAvailable was about 49 GiB after start (2026-09-17 post). Differences from the site's own deployment: no patched chat template, no API key (the engine listens on 127.0.0.1 only) and no keepalive proxy, so long silent tool calls reach the client unfiltered. Readiness: this site's notes give about 7 minutes after a restart and Alzeo reports 7-9 minutes for a first boot and 3.5-6.5 minutes later; ready_timeout 20m is a watchdog above both, not a measurement.",
+    "recorded_at": "2026-09-17T00:00:00Z"
   }
 }

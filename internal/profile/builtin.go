@@ -28,7 +28,7 @@ func Builtin() (map[string]Profile, error) {
 			return nil, err
 		}
 		if _, dup := out[p.ID]; dup {
-			return nil, fmt.Errorf("builtin %s: duplicate id", e.Name())
+			return nil, fmt.Errorf("profile %s: duplicate id", e.Name())
 		}
 		out[p.ID] = p
 	}
@@ -49,10 +49,10 @@ func IDs(m map[string]Profile) []string {
 func parseNamed(file string, b []byte) (Profile, error) {
 	p, err := Parse(b)
 	if err != nil {
-		return Profile{}, fmt.Errorf("builtin %s: %w", file, err)
+		return Profile{}, fmt.Errorf("profile %s: %w", file, err)
 	}
 	if want := strings.TrimSuffix(file, ".json"); p.ID != want {
-		return Profile{}, fmt.Errorf("builtin %s: id %q does not match the file name", file, p.ID)
+		return Profile{}, fmt.Errorf("profile %s: id %q does not match the file name", file, p.ID)
 	}
 	return p, nil
 }

@@ -14,7 +14,7 @@ const goodAdopt = `{"schema_version":1,"kind":"profile","id":"site-qwen","title"
 "artifacts":[{"kind":"huggingface","name":"org/model","revision":"52d1adc5f38aa5ebf099c29ed7025ba34cfbb854","files":[{"path":"config.json","bytes":10}]}],
 "adopt":{"units":["engine.service","proxy.service"],"container":"engine"},
 "serving":{"port":30001,"model":"m","ready_timeout":"10m"},
-"memory":{"start_min_available_bytes":50000000000,"evidence":"estimated","note":"reviewed floor"}}`
+"memory":{"start_min_available_bytes":50000000000,"evidence":"estimated","note":"reviewed floor","recorded_at":"2026-11-24T00:00:00Z"}}`
 
 func TestParseAcceptsAdoptedProfile(t *testing.T) {
 	p, err := Parse([]byte(goodAdopt))
@@ -55,7 +55,7 @@ func TestLaunchProfilesNeedPinnedImagesAndOwnUnit(t *testing.T) {
 	doc := `{"schema_version":1,"kind":"profile","id":"pi-q8","title":"Pi Q8","artifacts":[],
 "launch":{"runtime":"docker","image":"lmsysorg/sglang:latest","args":["serve"]},
 "serving":{"port":1,"model":"m","ready_timeout":"1m"},
-"memory":{"start_min_available_bytes":1,"evidence":"estimated","note":"n"}}`
+"memory":{"start_min_available_bytes":1,"evidence":"estimated","note":"n","recorded_at":"2026-11-24T00:00:00Z"}}`
 	if _, err := Parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), "pinned by sha256 digest") {
 		t.Fatalf("moving tag accepted: %v", err)
 	}
@@ -114,7 +114,7 @@ func prof(id string, startMin int64) Profile {
 	return Profile{SchemaVersion: 1, Kind: "profile", ID: id, Title: id,
 		Adopt:   &Adopt{Units: []string{id + ".service"}},
 		Serving: Serving{Port: 1, Model: "m", ReadyTimeout: Duration{time.Second}},
-		Memory:  Memory{StartMinAvailableBytes: startMin, Evidence: "estimated", Note: "n"}}
+		Memory:  Memory{StartMinAvailableBytes: startMin, Evidence: "estimated", Note: "n", RecordedAt: time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)}}
 }
 
 func opts() Options {
@@ -337,5 +337,16 @@ func TestLaunchValidationCoversMountsAndRuntimeMismatch(t *testing.T) {
 	g.Artifacts[0].Creates = ""
 	if g.Validate() == nil {
 		t.Fatal("build without creates accepted")
+	}
+}
+
+func TestParseRejectsMemoryWithoutRecordedAt(t *testing.T) {
+	doc := strings.Replace(goodAdopt, `,"recorded_at":"2026-11-24T00:00:00Z"`, "", 1)
+	if _, err := Parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), "recorded_at") {
+		t.Fatalf("err=%v", err)
+	}
+	bad := strings.Replace(goodAdopt, `"kind":"huggingface",`, `"kind":"huggingface","role":"weights",`, 1)
+	if _, err := Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "unknown role") {
+		t.Fatalf("err=%v", err)
 	}
 }

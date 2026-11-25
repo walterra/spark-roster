@@ -48,8 +48,9 @@ func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.Duration
 // Artifact is something that must exist on the host before the profile can
 // start: model weights, a drafter, a container image or a source checkout.
 type Artifact struct {
-	Kind     string `json:"kind"` // huggingface | url | image | git
-	Name     string `json:"name"` // repo id, destination path, image name or checkout directory
+	Kind     string `json:"kind"`           // huggingface | url | image | git
+	Role     string `json:"role,omitempty"` // model | drafter | runtime, for planner evidence
+	Name     string `json:"name"`           // repo id, destination path, image name or checkout directory
 	Revision string `json:"revision,omitempty"`
 	URL      string `json:"url,omitempty"`
 	SHA256   string `json:"sha256,omitempty"`
@@ -111,6 +112,8 @@ type Memory struct {
 	SteadyBytes            int64  `json:"steady_bytes,omitempty"`
 	Evidence               string `json:"evidence"` // measured | estimated
 	Note                   string `json:"note"`
+	// RecordedAt is when the evidence was gathered. Estimates age too.
+	RecordedAt time.Time `json:"recorded_at"`
 }
 
 type Profile struct {
@@ -201,8 +204,8 @@ func (p Profile) Validate() error {
 		return fail("serving.ready_timeout must be between 1s and 24h")
 	}
 	m := p.Memory
-	if m.StartMinAvailableBytes <= 0 || m.SteadyBytes < 0 || (m.Evidence != "measured" && m.Evidence != "estimated") || strings.TrimSpace(m.Note) == "" {
-		return fail("memory needs start_min_available_bytes > 0, evidence measured|estimated and a note")
+	if m.StartMinAvailableBytes <= 0 || m.SteadyBytes < 0 || (m.Evidence != "measured" && m.Evidence != "estimated") || strings.TrimSpace(m.Note) == "" || m.RecordedAt.IsZero() {
+		return fail("memory needs start_min_available_bytes > 0, evidence measured|estimated, a note and recorded_at")
 	}
 	return nil
 }
@@ -210,6 +213,9 @@ func (p Profile) Validate() error {
 func validArtifact(a Artifact) error {
 	if a.Name == "" {
 		return errors.New("name is required")
+	}
+	if a.Role != "" && a.Role != "model" && a.Role != "drafter" && a.Role != "runtime" {
+		return fmt.Errorf("unknown role %q", a.Role)
 	}
 	switch a.Kind {
 	case "huggingface", "git":
