@@ -39,7 +39,7 @@ func RenderUnit(p Profile, user, group string) (string, error) {
 	var argv []string
 	switch l.Runtime {
 	case "docker":
-		argv = []string{"/usr/bin/docker", "run", "--rm", "--name", ContainerName(p.ID), "--gpus", "all", "--network", "host", "--ipc=host"}
+		argv = []string{"/usr/bin/docker", "run", "--rm", "--name", ContainerName(p.ID), "--gpus", "all", "--network", "host"}
 		if l.MemoryLimit != "" {
 			if !memoryLimit(l.MemoryLimit) {
 				return "", fmt.Errorf("invalid memory_limit %q", l.MemoryLimit)
@@ -53,6 +53,10 @@ func RenderUnit(p Profile, user, group string) (string, error) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			argv = append(argv, "-e", k+"="+l.Env[k])
+		}
+		argv = append(argv, l.DockerArgs...)
+		for _, m := range l.Mounts {
+			argv = append(argv, "--mount", dockerMount(m))
 		}
 		argv = append(argv, l.Image)
 	case "process":
@@ -86,6 +90,12 @@ func RenderUnit(p Profile, user, group string) (string, error) {
 	b.WriteString("Restart=no\nTimeoutStopSec=60\n")
 	if l.Runtime == "process" {
 		b.WriteString("KillMode=control-group\n")
+		if l.MemoryLimit != "" {
+			if !memoryLimit(l.MemoryLimit) {
+				return "", fmt.Errorf("invalid memory_limit %q", l.MemoryLimit)
+			}
+			fmt.Fprintf(&b, "MemoryMax=%s\nMemorySwapMax=0\n", strings.ToUpper(l.MemoryLimit))
+		}
 	}
 	return b.String(), nil
 }
@@ -117,4 +127,15 @@ func memoryLimit(s string) bool {
 		}
 	}
 	return s[0] != '0'
+}
+
+// dockerMount turns "src:dst[:ro|rw]" into docker's --mount syntax, which
+// does not create a missing source the way -v does.
+func dockerMount(m string) string {
+	parts := strings.Split(m, ":")
+	out := "type=bind,src=" + parts[0] + ",dst=" + parts[1]
+	if len(parts) == 3 && parts[2] == "ro" {
+		out += ",readonly"
+	}
+	return out
 }

@@ -49,11 +49,29 @@ func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.Duration
 // start: model weights, a drafter, a container image or a source checkout.
 type Artifact struct {
 	Kind     string `json:"kind"` // huggingface | url | image | git
-	Name     string `json:"name"`
+	Name     string `json:"name"` // repo id, destination path, image name or checkout directory
 	Revision string `json:"revision,omitempty"`
 	URL      string `json:"url,omitempty"`
 	SHA256   string `json:"sha256,omitempty"`
 	Bytes    int64  `json:"bytes,omitempty"`
+	// Dest stores a huggingface artifact as a flat directory of files instead
+	// of the Hugging Face cache layout.
+	Dest string `json:"dest,omitempty"`
+	// Files lists the repository files with their sizes. A sha256 is given for
+	// large (LFS) files, which is what the Hugging Face API publishes. Staging
+	// and Staged verify against this list.
+	Files []File `json:"files,omitempty"`
+	// Build runs in order inside a git artifact after it is checked out;
+	// Creates names the file that must exist afterwards.
+	Build   [][]string `json:"build,omitempty"`
+	Creates string     `json:"creates,omitempty"`
+}
+
+// File is one file of a pinned repository.
+type File struct {
+	Path   string `json:"path"`
+	Bytes  int64  `json:"bytes"`
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // Adopt names a service that something else deployed. SparkRoster starts and
@@ -71,6 +89,11 @@ type Launch struct {
 	Args        []string          `json:"args"`
 	Env         map[string]string `json:"env,omitempty"`
 	MemoryLimit string            `json:"memory_limit,omitempty"` // e.g. "100g"
+	// DockerArgs are docker run flags placed before the image. Mounts are
+	// "src:dst[:ro]" bind mounts. Dirs are created before the first start.
+	DockerArgs []string `json:"docker_args,omitempty"`
+	Mounts     []string `json:"mounts,omitempty"`
+	Dirs       []string `json:"dirs,omitempty"`
 }
 
 type Serving struct {
@@ -100,6 +123,10 @@ type Profile struct {
 	Launch        *Launch    `json:"launch,omitempty"`
 	Serving       Serving    `json:"serving"`
 	Memory        Memory     `json:"memory"`
+	// Concurrency and ContextTokens describe the served configuration for the
+	// planner and for reports. They do not change how the service launches.
+	Concurrency   int `json:"concurrency,omitempty"`
+	ContextTokens int `json:"context_tokens,omitempty"`
 }
 
 // Parse decodes and validates one profile. Unknown fields are rejected so a
@@ -164,6 +191,9 @@ func (p Profile) Validate() error {
 		}
 	}
 	s := p.Serving
+	if p.Concurrency < 0 || p.ContextTokens < 0 {
+		return fail("concurrency and context_tokens must not be negative")
+	}
 	if s.Port == 0 || s.Model == "" || strings.ContainsAny(s.KeyFile, "\r\n") {
 		return fail("serving needs a port and a model name")
 	}
@@ -183,8 +213,31 @@ func validArtifact(a Artifact) error {
 	}
 	switch a.Kind {
 	case "huggingface", "git":
+		if a.Kind == "huggingface" {
+			if len(a.Files) == 0 {
+				return errors.New("huggingface artifacts need a files list with sizes")
+			}
+			for _, f := range a.Files {
+				if f.Path == "" || strings.HasPrefix(f.Path, "/") || strings.Contains(f.Path, "..") || f.Bytes < 0 || (f.SHA256 != "" && !sha256Pattern.MatchString(f.SHA256)) {
+					return fmt.Errorf("invalid file entry %q", f.Path)
+				}
+			}
+		}
 		if !hexRevision.MatchString(a.Revision) {
 			return errors.New("revision must be a full 40-character commit hash, not a branch or tag")
+		}
+		if a.Kind == "git" {
+			if !strings.HasPrefix(a.URL, "https://") {
+				return errors.New("git artifacts need an https url")
+			}
+			if len(a.Build) > 0 && a.Creates == "" {
+				return errors.New("git artifacts with a build need creates")
+			}
+			for _, c := range a.Build {
+				if len(c) == 0 || c[0] == "" {
+					return errors.New("build commands need a program")
+				}
+			}
 		}
 	case "image":
 		if !imagePin.MatchString(a.Revision) {
@@ -208,6 +261,15 @@ func validLaunch(l Launch) error {
 		if !envName.MatchString(k) {
 			return fmt.Errorf("invalid environment name %q", k)
 		}
+	}
+	for _, m := range l.Mounts {
+		parts := strings.Split(m, ":")
+		if len(parts) < 2 || len(parts) > 3 || parts[0] == "" || !strings.HasPrefix(parts[1], "/") || (len(parts) == 3 && parts[2] != "ro" && parts[2] != "rw") {
+			return fmt.Errorf("mount %q must be src:/dst[:ro|rw]", m)
+		}
+	}
+	if l.Runtime == "process" && (len(l.Mounts) > 0 || len(l.DockerArgs) > 0) {
+		return errors.New("mounts and docker_args apply to docker profiles only")
 	}
 	switch l.Runtime {
 	case "docker":

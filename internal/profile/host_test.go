@@ -209,9 +209,9 @@ func TestHostStagedChecksEveryArtifactAndReportsAll(t *testing.T) {
 	p := prof("q", 1)
 	rev := strings.Repeat("b", 40)
 	p.Artifacts = []Artifact{
-		{Kind: "huggingface", Name: "org/m", Revision: rev},
+		{Kind: "huggingface", Name: "org/m", Revision: rev, Files: []File{{Path: "config.json", Bytes: 10}}},
 		{Kind: "url", Name: "/models/x.gguf", URL: "https://x/y", SHA256: strings.Repeat("c", 64), Bytes: 10},
-		{Kind: "git", Name: "/src/llama", Revision: rev},
+		{Kind: "git", Name: "/src/llama", Revision: rev, URL: "https://example.invalid/llama.git"},
 	}
 	x.states["q.service"] = "inactive"
 	err := x.h.Staged(context.Background(), p)
@@ -219,6 +219,7 @@ func TestHostStagedChecksEveryArtifactAndReportsAll(t *testing.T) {
 		t.Fatalf("want three problems, got %v", err)
 	}
 	x.files["/hf/models--org--m/snapshots/"+rev] = fakeFile{dir: true}
+	x.files["/hf/models--org--m/snapshots/"+rev+"/config.json"] = fakeFile{size: 10}
 	x.files["/models/x.gguf"] = fakeFile{size: 10}
 	x.outputs["git -C /src/llama rev-parse HEAD"] = rev
 	if err := x.h.Staged(context.Background(), p); err != nil {
@@ -266,5 +267,36 @@ func TestJournaledOverHostSwitchesAdoptedProfiles(t *testing.T) {
 	}
 	if st, _ := j.Read(); st.Active != "b" {
 		t.Fatalf("%+v", st)
+	}
+}
+
+func TestHostStagedReportsWrongSizedHuggingFaceFile(t *testing.T) {
+	x := newHost()
+	rev := strings.Repeat("b", 40)
+	p := prof("q", 1)
+	p.Artifacts = []Artifact{{Kind: "huggingface", Name: "org/m", Revision: rev, Files: []File{{Path: "a.bin", Bytes: 100}, {Path: "b.bin", Bytes: 5}}}}
+	x.states["q.service"] = "inactive"
+	dir := "/hf/models--org--m/snapshots/" + rev
+	x.files[dir] = fakeFile{dir: true}
+	x.files[dir+"/a.bin"] = fakeFile{size: 99}
+	err := x.h.Staged(context.Background(), p)
+	if err == nil || !strings.Contains(err.Error(), "2 of 2 files wrong") || !strings.Contains(err.Error(), "a.bin has 99 bytes, expected 100") || !strings.Contains(err.Error(), "b.bin missing") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestHostStagedRequiresBuildOutputForGitArtifacts(t *testing.T) {
+	x := newHost()
+	rev := strings.Repeat("c", 40)
+	p := launched("process")
+	p.Artifacts = []Artifact{{Kind: "git", Name: "/src/l", Revision: rev, URL: "https://x/y", Creates: "/src/l/build/bin/server"}}
+	x.states[UnitName("pi-q8")] = "inactive"
+	x.outputs["git -C /src/l rev-parse HEAD"] = rev
+	if err := x.h.Staged(context.Background(), p); err == nil || !strings.Contains(err.Error(), "build output") {
+		t.Fatalf("missing build output accepted: %v", err)
+	}
+	x.files["/src/l/build/bin/server"] = fakeFile{size: 1}
+	if err := x.h.Staged(context.Background(), p); err != nil {
+		t.Fatal(err)
 	}
 }

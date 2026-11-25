@@ -193,10 +193,22 @@ func (h *Host) Staged(ctx context.Context, p Profile) error {
 func (h *Host) artifact(ctx context.Context, a Artifact) error {
 	switch a.Kind {
 	case "huggingface":
-		dir := filepath.Join(h.HFCache, "models--"+strings.ReplaceAll(a.Name, "/", "--"), "snapshots", a.Revision)
-		st, err := h.Stat(dir)
-		if err != nil || !st.IsDir() {
-			return fmt.Errorf("revision %s not in the cache at %s", a.Revision, dir)
+		dir := HFDir(h.HFCache, a)
+		if st, err := h.Stat(dir); err != nil || !st.IsDir() {
+			return fmt.Errorf("revision %s not found at %s", a.Revision, dir)
+		}
+		var bad []string
+		for _, f := range a.Files {
+			st, err := h.Stat(filepath.Join(dir, f.Path))
+			switch {
+			case err != nil:
+				bad = append(bad, f.Path+" missing")
+			case st.Size() != f.Bytes:
+				bad = append(bad, fmt.Sprintf("%s has %d bytes, expected %d", f.Path, st.Size(), f.Bytes))
+			}
+		}
+		if len(bad) > 0 {
+			return fmt.Errorf("%d of %d files wrong: %s", len(bad), len(a.Files), strings.Join(bad[:min(3, len(bad))], ", "))
 		}
 	case "image":
 		out, err := h.Output(ctx, "docker", "image", "inspect", "--format", "{{.Id}} {{json .RepoDigests}}", a.Name+"@"+strings.TrimPrefix(a.Revision, "@"))
@@ -223,6 +235,20 @@ func (h *Host) artifact(ctx context.Context, a Artifact) error {
 		if err != nil || out != a.Revision {
 			return fmt.Errorf("checkout at %s is not at %s", a.Name, a.Revision)
 		}
+		if a.Creates != "" {
+			if _, err := h.Stat(a.Creates); err != nil {
+				return fmt.Errorf("build output %s is missing", a.Creates)
+			}
+		}
 	}
 	return nil
+}
+
+// HFDir is where a huggingface artifact's files live: a flat Dest directory
+// when one is set, otherwise the revision's snapshot in the hub cache.
+func HFDir(hfCache string, a Artifact) string {
+	if a.Dest != "" {
+		return a.Dest
+	}
+	return filepath.Join(hfCache, "models--"+strings.ReplaceAll(a.Name, "/", "--"), "snapshots", a.Revision)
 }

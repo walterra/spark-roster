@@ -11,7 +11,7 @@ import (
 )
 
 const goodAdopt = `{"schema_version":1,"kind":"profile","id":"site-qwen","title":"Site Qwen",
-"artifacts":[{"kind":"huggingface","name":"org/model","revision":"52d1adc5f38aa5ebf099c29ed7025ba34cfbb854"}],
+"artifacts":[{"kind":"huggingface","name":"org/model","revision":"52d1adc5f38aa5ebf099c29ed7025ba34cfbb854","files":[{"path":"config.json","bytes":10}]}],
 "adopt":{"units":["engine.service","proxy.service"],"container":"engine"},
 "serving":{"port":30001,"model":"m","ready_timeout":"10m"},
 "memory":{"start_min_available_bytes":50000000000,"evidence":"estimated","note":"reviewed floor"}}`
@@ -271,5 +271,71 @@ func TestPlanSwitchMatchesSwitchOrder(t *testing.T) {
 	}
 	if got := PlanSwitch(nil, b); len(got) != 4 {
 		t.Fatalf("%v", got)
+	}
+}
+
+func TestParseRejectsHuggingFaceArtifactWithoutFileList(t *testing.T) {
+	doc := strings.Replace(goodAdopt, `,"files":[{"path":"config.json","bytes":10}]`, "", 1)
+	if _, err := Parse([]byte(doc)); err == nil || !strings.Contains(err.Error(), "files list") {
+		t.Fatalf("err=%v", err)
+	}
+	for _, bad := range []string{`{"path":"../x","bytes":1}`, `{"path":"/abs","bytes":1}`, `{"path":"a","bytes":-1}`, `{"path":"a","bytes":1,"sha256":"short"}`} {
+		d := strings.Replace(goodAdopt, `{"path":"config.json","bytes":10}`, bad, 1)
+		if _, err := Parse([]byte(d)); err == nil || !strings.Contains(err.Error(), "invalid file entry") {
+			t.Errorf("%s accepted: %v", bad, err)
+		}
+	}
+}
+
+func TestExpandReplacesOnlyKnownVariables(t *testing.T) {
+	p := launched("docker")
+	p.Launch.Args = []string{"--cache", "{hf_cache}", "--json", `{"a":1}`, "{home}/x"}
+	p.Launch.Mounts = []string{"{data}/m:/model:ro"}
+	p.Launch.Env = map[string]string{"X": "{home}"}
+	p.Serving.KeyFile = "{home}/.config/key"
+	p.Artifacts = []Artifact{{Kind: "git", Name: "{data}/llama", Revision: strings.Repeat("a", 40), URL: "https://x/y", Build: [][]string{{"cmake", "-S", "{dir}", "-B", "{dir}/build"}}, Creates: "{data}/llama/build/bin/s"}}
+	q, err := Expand(p, Vars{Home: "/h", Data: "/d", HFCache: "/hf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(q.Launch.Args, []string{"--cache", "/hf", "--json", `{"a":1}`, "/h/x"}) || q.Launch.Mounts[0] != "/d/m:/model:ro" || q.Launch.Env["X"] != "/h" || q.Serving.KeyFile != "/h/.config/key" {
+		t.Fatalf("%+v", q.Launch)
+	}
+	if b := q.Artifacts[0].Build[0]; !slices.Equal(b, []string{"cmake", "-S", "/d/llama", "-B", "/d/llama/build"}) || q.Artifacts[0].Creates != "/d/llama/build/bin/s" {
+		t.Fatalf("%v", q.Artifacts[0])
+	}
+	if p.Launch.Args[1] != "{hf_cache}" {
+		t.Fatal("Expand modified its input")
+	}
+	if _, err := Expand(p, Vars{Home: "relative", Data: "/d", HFCache: "/hf"}); err == nil {
+		t.Fatal("relative home accepted")
+	}
+}
+
+func TestLaunchValidationCoversMountsAndRuntimeMismatch(t *testing.T) {
+	p := launched("docker")
+	p.Launch.Mounts = []string{"nodest"}
+	if p.Validate() == nil {
+		t.Fatal("mount without destination accepted")
+	}
+	p.Launch.Mounts = []string{"/a:/b:wx"}
+	if p.Validate() == nil {
+		t.Fatal("bad mount mode accepted")
+	}
+	q := launched("process")
+	q.Launch.Mounts = []string{"/a:/b"}
+	if q.Validate() == nil {
+		t.Fatal("mounts accepted on a process profile")
+	}
+	g := launched("process")
+	g.Artifacts = []Artifact{{Kind: "git", Name: "/s", Revision: strings.Repeat("a", 40), URL: "http://x", Creates: "x"}}
+	if g.Validate() == nil {
+		t.Fatal("plain http git url accepted")
+	}
+	g.Artifacts[0].URL = "https://x/y"
+	g.Artifacts[0].Build = [][]string{{"make"}}
+	g.Artifacts[0].Creates = ""
+	if g.Validate() == nil {
+		t.Fatal("build without creates accepted")
 	}
 }

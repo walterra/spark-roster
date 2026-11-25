@@ -1,0 +1,148 @@
+{
+  "schema_version": 1,
+  "kind": "profile",
+  "id": "inkling-2-mini",
+  "title": "Inkling-2-Mini on SGLang",
+  "concurrency": 1,
+  "context_tokens": 262144,
+  "artifacts": [
+    {
+      "kind": "image",
+      "name": "lmsysorg/sglang",
+      "revision": "sha256:bc811ac7ac68c6fca116a49750baca817b8613a30abface8a347682b55d132e3"
+    },
+    {
+      "kind": "huggingface",
+      "name": "thinkingmachines/Inkling-2-Mini",
+      "revision": "b85c3cfa615fc413cc9af3379f491b963f3b586a",
+      "files": [
+        {
+          "path": ".gitattributes",
+          "bytes": 1570
+        },
+        {
+          "path": "README.md",
+          "bytes": 54870
+        },
+        {
+          "path": "chat_template.jinja",
+          "bytes": 6868
+        },
+        {
+          "path": "config.json",
+          "bytes": 2722
+        },
+        {
+          "path": "generation_config.json",
+          "bytes": 98
+        },
+        {
+          "path": "hf_quant_config.json",
+          "bytes": 67924
+        },
+        {
+          "path": "model-00001-of-00001.safetensors",
+          "bytes": 19526019168,
+          "sha256": "65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1"
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "bytes": 109300
+        },
+        {
+          "path": "mtp.safetensors",
+          "bytes": 635801416,
+          "sha256": "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2"
+        },
+        {
+          "path": "processor_config.json",
+          "bytes": 461
+        },
+        {
+          "path": "special_tokens_map.json",
+          "bytes": 529
+        },
+        {
+          "path": "tiktoken/tokenizer.model",
+          "bytes": 3386494,
+          "sha256": "f170372dd655728909228220d77cf6b8104a59f38a91262a7d2c4027906ec0d8"
+        },
+        {
+          "path": "tokenizer.json",
+          "bytes": 26178678,
+          "sha256": "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "bytes": 13235
+        }
+      ],
+      "dest": "{data}/inkling-2-mini/b85c3cfa615fc413cc9af3379f491b963f3b586a"
+    }
+  ],
+  "launch": {
+    "runtime": "docker",
+    "image": "lmsysorg/sglang@sha256:bc811ac7ac68c6fca116a49750baca817b8613a30abface8a347682b55d132e3",
+    "memory_limit": "96g",
+    "env": {
+      "MAX_JOBS": "4",
+      "HF_HUB_OFFLINE": "1"
+    },
+    "docker_args": [
+      "--pull=never",
+      "--shm-size",
+      "8g",
+      "--security-opt",
+      "no-new-privileges",
+      "--entrypoint",
+      "sglang"
+    ],
+    "mounts": [
+      "{data}/inkling-2-mini/b85c3cfa615fc413cc9af3379f491b963f3b586a:/model:ro"
+    ],
+    "args": [
+      "serve",
+      "--model-path",
+      "/model",
+      "--served-model-name",
+      "inkling-2-mini",
+      "--tp",
+      "1",
+      "--ep",
+      "1",
+      "--attention-backend",
+      "fa4",
+      "--dtype",
+      "bfloat16",
+      "--page-size",
+      "128",
+      "--mem-fraction-static",
+      "0.45",
+      "--grammar-backend",
+      "xgrammar",
+      "--reasoning-parser",
+      "inkling",
+      "--tool-call-parser",
+      "inkling2",
+      "--context-length",
+      "262144",
+      "--max-running-requests",
+      "1",
+      "--enable-metrics",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "9932"
+    ]
+  },
+  "serving": {
+    "port": 9932,
+    "model": "inkling-2-mini",
+    "ready_timeout": "9m"
+  },
+  "memory": {
+    "start_min_available_bytes": 80530636800,
+    "evidence": "estimated",
+    "note": "75 GiB is the start floor the Inkling trial used. Measured: minimum host MemAvailable 56.2-56.4 GiB at a 262,144-token window (2026-11-24 gate and full run); ready 336-361 s after start."
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "kind": "profile",
+  "id": "qwen3-8-27b-pi-q8",
+  "title": "Pi-adapted Qwen3.8-27B Q8_0 on llama.cpp",
+  "concurrency": 1,
+  "context_tokens": 262144,
+  "artifacts": [
+    {
+      "kind": "git",
+      "name": "{data}/pi-q8/llama-b1b770d90d94cad9e9ea5b993bdbc383a522fb28",
+      "revision": "b1b770d90d94cad9e9ea5b993bdbc383a522fb28",
+      "url": "https://github.com/ggml-org/llama.cpp.git",
+      "build": [
+        [
+          "cmake",
+          "-S",
+          "{dir}",
+          "-B",
+          "{dir}/build-spark-roster-headless",
+          "-DGGML_CUDA=ON",
+          "-DCMAKE_CUDA_ARCHITECTURES=121a-real",
+          "-DCMAKE_BUILD_TYPE=Release",
+          "-DLLAMA_BUILD_TESTS=OFF",
+          "-DLLAMA_BUILD_EXAMPLES=OFF",
+          "-DLLAMA_BUILD_UI=OFF",
+          "-DLLAMA_USE_PREBUILT_UI=OFF"
+        ],
+        [
+          "cmake",
+          "--build",
+          "{dir}/build-spark-roster-headless",
+          "--target",
+          "llama-server",
+          "--parallel",
+          "4"
+        ]
+      ],
+      "creates": "{data}/pi-q8/llama-b1b770d90d94cad9e9ea5b993bdbc383a522fb28/build-spark-roster-headless/bin/llama-server"
+    },
+    {
+      "kind": "url",
+      "name": "{data}/pi-q8/Qwen3.8-27B-pi-Q8_0.gguf",
+      "url": "https://huggingface.co/harness-hub/Qwen3.8-27B-pi-adapted-GGUF/resolve/19980ce556b41c7b73818083c9adf4b3fa0c72e5/Qwen3.8-27B-pi-Q8_0.gguf",
+      "sha256": "bcb2b967901e772e76842bee0c67bc92f27c819c0ce7f14642e17d64aadd4d21",
+      "bytes": 28595763840
+    }
+  ],
+  "launch": {
+    "runtime": "process",
+    "exe": "{data}/pi-q8/llama-b1b770d90d94cad9e9ea5b993bdbc383a522fb28/build-spark-roster-headless/bin/llama-server",
+    "memory_limit": "48g",
+    "args": [
+      "--model",
+      "{data}/pi-q8/Qwen3.8-27B-pi-Q8_0.gguf",
+      "--alias",
+      "qwen3.8-pi",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      "9931",
+      "--ctx-size",
+      "262144",
+      "--parallel",
+      "1",
+      "--gpu-layers",
+      "all",
+      "--jinja",
+      "--reasoning",
+      "off"
+    ]
+  },
+  "serving": {
+    "port": 9931,
+    "model": "qwen3.8-pi",
+    "ready_timeout": "4m"
+  },
+  "memory": {
+    "start_min_available_bytes": 69793218560,
+    "evidence": "estimated",
+    "note": "65 GiB is the start floor the Pi Q8 trial used. Measured: minimum host MemAvailable 48.9 GiB at a 262,144-token server window with the host otherwise idle (2026-11-24 gate); ready 57-62 s after start."
+  }
+}
