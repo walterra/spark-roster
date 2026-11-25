@@ -25,6 +25,13 @@ type Options struct {
 	Poll            time.Duration
 	ProbeTimeout    time.Duration
 	RecoveryTimeout time.Duration
+	// Resume starts units a benchmark paused (for example a canary timer). Recover
+	// calls it after the baseline serves again. It is required when a journal
+	// lists paused units.
+	Resume func(ctx context.Context, units []string) error
+	// AllowBenchmark lets Journaled switch while a benchmark record is set. Only the
+	// benchmark worker, which owns the host for the run, sets it.
+	AllowBenchmark bool
 }
 
 // ErrRestoreFailed and ErrExitUnconfirmed mark the two failures after which

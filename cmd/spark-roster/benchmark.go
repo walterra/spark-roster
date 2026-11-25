@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/walterra/spark-roster/internal/profile"
 )
 
 const benchmarkState = "/var/lib/spark-roster-benchmark"
@@ -50,6 +52,13 @@ type benchReport struct {
 	TaskLimitSec  int           `json:"task_timeout_seconds,omitempty"`
 	Repetitions   int           `json:"repetitions,omitempty"`
 	Mode          string        `json:"mode,omitempty"`
+	// Fields of profile-based runs (schema 3). Defs holds the exact profile
+	// definitions that were run, so a report states how to repeat it.
+	Baseline string                     `json:"baseline_profile,omitempty"`
+	Paused   []string                   `json:"paused_units,omitempty"`
+	Tool     string                     `json:"tool,omitempty"`
+	Host     map[string]string          `json:"host,omitempty"`
+	Defs     map[string]profile.Profile `json:"profile_definitions,omitempty"`
 	// Settings actually applied to servers and Pi, so a report states what was measured.
 	ServerContext int  `json:"server_context,omitempty"`
 	PiContext     int  `json:"pi_context,omitempty"`

@@ -33,12 +33,20 @@ type Host struct {
 	Stat func(path string) (os.FileInfo, error)
 	// HFCache is the Hugging Face hub cache directory.
 	HFCache string
+	// Root means the process already is root: no sudo is needed or used.
+	Root bool
 }
 
 // NewHost returns a Host wired to the real system.
 func NewHost(hfCache string) *Host {
+	root := os.Geteuid() == 0
+	control := sudoControl
+	if root {
+		control = directControl
+	}
 	return &Host{
-		Control: sudoControl,
+		Root:    root,
+		Control: control,
 		Output:  runOutput,
 		Inspect: host.InspectUnit,
 		Memory: func(context.Context) (uint64, error) {
@@ -66,8 +74,27 @@ func NewHost(hfCache string) *Host {
 	}
 }
 
+// directControl is sudoControl for a process that already is root.
+func directControl(ctx context.Context, action, unit string) error {
+	if !host.ValidUnit(unit) || (action != "start" && action != "stop") {
+		return errors.New("refusing an unexpected systemctl request")
+	}
+	args := []string{"--no-ask-password"}
+	if action == "start" {
+		args = append(args, "--no-block")
+	}
+	args = append(args, action, "--", unit)
+	if err := exec.CommandContext(ctx, "systemctl", args...).Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("systemctl %s %s failed", action, unit)
+	}
+	return nil
+}
+
 func sudoControl(ctx context.Context, action, unit string) error {
-	if !host.ValidService(unit) || (action != "start" && action != "stop") {
+	if !host.ValidUnit(unit) || (action != "start" && action != "stop") {
 		return errors.New("refusing an unexpected systemctl request")
 	}
 	args := []string{"-n", "systemctl", "--no-ask-password"}
@@ -305,8 +332,31 @@ func (h *Host) Units(ctx context.Context, p Profile) ([]UnitState, error) {
 // SudoReady reports whether privileged systemctl calls will run without a
 // password prompt. It never prompts.
 func (h *Host) SudoReady(ctx context.Context) error {
+	if h.Root {
+		return nil
+	}
 	if _, err := h.Output(ctx, "sudo", "-n", "true"); err != nil {
 		return errors.New("sudo needs a password. Run `sudo -v` in this terminal, then retry")
 	}
 	return nil
+}
+
+// ControlUnit starts or stops one named unit, a service or a timer, through the
+// same privileged path as profile units.
+func (h *Host) ControlUnit(ctx context.Context, action, unit string) error {
+	return h.Control(ctx, action, unit)
+}
+
+// UnitActive reports whether a unit is currently active.
+func (h *Host) UnitActive(ctx context.Context, unit string) (bool, error) {
+	u, err := h.Inspect(ctx, unit)
+	if err != nil {
+		return false, err
+	}
+	return u.LoadState == "loaded" && u.ActiveState == "active", nil
+}
+
+// ConfirmInactive checks that a unit is no longer active, after a stop.
+func (h *Host) ConfirmInactive(ctx context.Context, unit string) error {
+	return h.unitState(ctx, unit, "inactive", "failed")
 }

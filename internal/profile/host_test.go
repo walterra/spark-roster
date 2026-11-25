@@ -300,3 +300,54 @@ func TestHostStagedRequiresBuildOutputForGitArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSudoReadyIsAlwaysTrueForRootAndNeverPrompts(t *testing.T) {
+	x := newHost()
+	x.h.Root = true
+	x.h.Output = func(context.Context, string, ...string) (string, error) {
+		t.Fatal("a root process must not shell out to sudo")
+		return "", nil
+	}
+	if err := x.h.SudoReady(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	x.h.Root = false
+	x.h.Output = func(_ context.Context, name string, args ...string) (string, error) {
+		if name != "sudo" || strings.Join(args, " ") != "-n true" {
+			t.Errorf("unexpected probe %s %v", name, args)
+		}
+		return "", errors.New("a password is required")
+	}
+	if err := x.h.SudoReady(context.Background()); err == nil || !strings.Contains(err.Error(), "sudo -v") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestDirectControlRefusesUnexpectedRequestsLikeSudoControl(t *testing.T) {
+	for _, tc := range [][2]string{{"restart", "a.service"}, {"start", "a.service; reboot"}, {"enable", "a.timer"}} {
+		if err := directControl(context.Background(), tc[0], tc[1]); err == nil || !strings.Contains(err.Error(), "refusing") {
+			t.Errorf("%v accepted: %v", tc, err)
+		}
+	}
+}
+
+func TestHostUnitHelpersWorkForTimers(t *testing.T) {
+	x := newHost()
+	x.states["canary.timer"] = "active"
+	ctx := context.Background()
+	if ok, err := x.h.UnitActive(ctx, "canary.timer"); err != nil || !ok {
+		t.Fatalf("%v %v", ok, err)
+	}
+	if err := x.h.ConfirmInactive(ctx, "canary.timer"); err == nil {
+		t.Fatal("an active timer was confirmed inactive")
+	}
+	if err := x.h.ControlUnit(ctx, "stop", "canary.timer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := x.h.ConfirmInactive(ctx, "canary.timer"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := x.h.UnitActive(ctx, "missing.timer"); ok {
+		t.Fatal("a missing unit reported active")
+	}
+}

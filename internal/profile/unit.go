@@ -20,6 +20,16 @@ func systemdQuote(s string) string {
 	return `"` + r.Replace(s) + `"`
 }
 
+// QuoteExec joins argv into one systemd command line, quoted the way ExecStart
+// words are. Use it for property values such as ExecStopPost.
+func QuoteExec(argv []string) string {
+	words := make([]string, len(argv))
+	for i, w := range argv {
+		words[i] = systemdQuote(w)
+	}
+	return strings.Join(words, " ")
+}
+
 func noControl(s string) bool { return !strings.ContainsAny(s, "\r\n\x00") }
 
 // RenderUnit builds the systemd unit for a launched profile. The unit starts

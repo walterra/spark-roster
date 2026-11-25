@@ -106,6 +106,9 @@ func (f *fake) Probe(_ context.Context, p Profile) error {
 	if f.probe != nil {
 		return f.probe(p.ID, f.probes[p.ID])
 	}
+	if !f.running[p.ID] {
+		return errors.New("not serving")
+	}
 	return nil
 }
 func (f *fake) Available(context.Context) (uint64, error) { return f.available, nil }
@@ -348,5 +351,55 @@ func TestParseRejectsMemoryWithoutRecordedAt(t *testing.T) {
 	bad := strings.Replace(goodAdopt, `"kind":"huggingface",`, `"kind":"huggingface","role":"weights",`, 1)
 	if _, err := Parse([]byte(bad)); err == nil || !strings.Contains(err.Error(), "unknown role") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+type unitsFake map[string][]UnitState
+
+func (u unitsFake) Units(_ context.Context, p Profile) ([]UnitState, error) {
+	if s, ok := u[p.ID]; ok {
+		return s, nil
+	}
+	return nil, errors.New("no such profile in fake")
+}
+
+func up(p Profile, state string) []UnitState {
+	var out []UnitState
+	for _, name := range p.Units() {
+		out = append(out, UnitState{Unit: name, Load: "loaded", Active: state})
+	}
+	return out
+}
+
+func TestCurrentNamesTheOneRunningProfileAndRefusesToGuess(t *testing.T) {
+	a, b := prof("a", 1), prof("b", 1)
+	set := map[string]Profile{"a": a, "b": b}
+	ctx := context.Background()
+	if p, run, err := Current(ctx, unitsFake{"a": up(a, "inactive"), "b": up(b, "inactive")}, State{}, set); err != nil || p != nil || len(run) != 0 {
+		t.Fatalf("idle host: %v %v %v", p, run, err)
+	}
+	if p, run, err := Current(ctx, unitsFake{"a": up(a, "active"), "b": up(b, "inactive")}, State{Active: "a"}, set); err != nil || p == nil || p.ID != "a" || len(run) != 1 {
+		t.Fatalf("one running: %v %v %v", p, run, err)
+	}
+	// A profile with some units active counts as running: stopping it must not be skipped.
+	two := prof("two", 1)
+	two.Adopt.Units = []string{"x.service", "y.service"}
+	mixed := []UnitState{{Unit: "x.service", Load: "loaded", Active: "active"}, {Unit: "y.service", Load: "loaded", Active: "inactive"}}
+	if p, _, err := Current(ctx, unitsFake{"two": mixed}, State{}, map[string]Profile{"two": two}); err != nil || p == nil || p.ID != "two" {
+		t.Fatalf("partial profile ignored: %v %v", p, err)
+	}
+	for name, tc := range map[string]struct {
+		fake unitsFake
+		st   State
+		want string
+	}{
+		"two running":         {unitsFake{"a": up(a, "active"), "b": up(b, "active")}, State{}, "more than one profile is running (a, b)"},
+		"journal disagrees":   {unitsFake{"a": up(a, "inactive"), "b": up(b, "active")}, State{Active: "a"}, `"a" is active but "b" is running`},
+		"journal but nothing": {unitsFake{"a": up(a, "inactive"), "b": up(b, "inactive")}, State{Active: "a"}, "none of its units are running"},
+		"inspect fails":       {unitsFake{"a": up(a, "inactive")}, State{}, "inspect b"},
+	} {
+		if _, _, err := Current(ctx, tc.fake, tc.st, set); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

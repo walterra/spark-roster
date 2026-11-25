@@ -51,3 +51,19 @@ func TestUnitRejectsUnexpectedValuesWithoutEcho(t *testing.T) {
 		}
 	}
 }
+
+func TestValidUnitAcceptsLiteralServicesAndTimersOnly(t *testing.T) {
+	for _, ok := range []string{"a.service", "canary.timer", "foo@bar.service", "a-b_c.timer"} {
+		if !ValidUnit(ok) {
+			t.Errorf("%q rejected", ok)
+		}
+	}
+	for _, bad := range []string{"", "*.timer", "a.socket", "a b.timer", "../x.timer", "-x.timer", "a.timer; reboot", "a.service\n"} {
+		if ValidUnit(bad) {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	if ValidService("canary.timer") {
+		t.Error("ValidService must stay service-only")
+	}
+}

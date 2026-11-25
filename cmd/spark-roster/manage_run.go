@@ -12,8 +12,9 @@ import (
 // runManage dispatches the profile commands with the real machine behind them.
 // It reports false when args[0] is not one of them.
 func runManage(args []string, out, diag io.Writer) (int, bool) {
-	switch args[0] {
-	case "list", "status", "doctor", "stage", "switch", "stop", "recover", "version", "--version":
+	switch {
+	case benchmarkManaged(args):
+	case args[0] == "list", args[0] == "status", args[0] == "doctor", args[0] == "stage", args[0] == "switch", args[0] == "stop", args[0] == "recover", args[0] == "version", args[0] == "--version":
 	default:
 		return 0, false
 	}

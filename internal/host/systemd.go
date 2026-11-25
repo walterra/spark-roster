@@ -14,10 +14,15 @@ import (
 )
 
 var serviceName = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.:@-]{0,247}\.service$`)
+var timerName = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.:@-]{0,247}\.timer$`)
 var showProperties = []string{"LoadState", "ActiveState", "UnitFileState", "MemoryCurrent", "MemoryMax"}
 
 // ValidService restricts inspection to one literal service unit, not a pattern.
 func ValidService(unit string) bool { return serviceName.MatchString(unit) }
+
+// ValidUnit also accepts one literal timer unit. Benchmarks pause a timer such as
+// a health canary; profiles never run as timers, so ValidService stays strict.
+func ValidUnit(unit string) bool { return serviceName.MatchString(unit) || timerName.MatchString(unit) }
 
 // Unit exposes allowlisted state only; it does not expose commands or environment.
 type Unit struct {
@@ -57,8 +62,8 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 
 // InspectUnit queries fixed properties without a shell, sudo, or lifecycle operations.
 func InspectUnit(ctx context.Context, unit string) (Unit, error) {
-	if !ValidService(unit) {
-		return Unit{}, fmt.Errorf("expected a literal .service unit name")
+	if !ValidUnit(unit) {
+		return Unit{}, fmt.Errorf("expected a literal .service or .timer unit name")
 	}
 	var out boundedOutput
 	cmd := exec.CommandContext(ctx, "systemctl", "--no-pager", "show", "--property="+strings.Join(showProperties, ","), "--", unit)
@@ -75,8 +80,8 @@ func InspectUnit(ctx context.Context, unit string) (Unit, error) {
 // ReadUnit parses a synthetic or captured systemctl show response. Unknown keys
 // are skipped, not retained; allowed fields are restricted to enums and counters.
 func ReadUnit(unit string, r io.Reader) (Unit, error) {
-	if !ValidService(unit) {
-		return Unit{}, fmt.Errorf("expected a literal .service unit name")
+	if !ValidUnit(unit) {
+		return Unit{}, fmt.Errorf("expected a literal .service or .timer unit name")
 	}
 	u := Unit{SchemaVersion: 1, Kind: "systemd_unit_observation", Unit: unit}
 	limited := &io.LimitedReader{R: r, N: maxInput + 1}

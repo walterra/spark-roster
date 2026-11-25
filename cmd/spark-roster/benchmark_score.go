@@ -96,7 +96,7 @@ func median(values []float64, unit string) string {
 }
 
 func printBenchScorecard(w io.Writer, r benchReport) error {
-	if r.Schema != 2 {
+	if r.Schema != 2 && r.Schema != 3 {
 		return fmt.Errorf("no full benchmark report yet")
 	}
 	if _, err := fmt.Fprintf(w, "Run: %s | restoration: %s | suite: %s\n\n", r.Run, r.Restoration, r.Suite); err != nil {
@@ -139,7 +139,7 @@ func printBenchScorecard(w io.Writer, r benchReport) error {
 			case "turn_limit":
 				limit++
 			}
-			if len(profiles) == 3 && common[fmt.Sprintf("%s/%d", t.Task, t.Repetition)] == 3 {
+			if len(profiles) > 1 && common[fmt.Sprintf("%s/%d", t.Task, t.Repetition)] == len(profiles) {
 				joined = append(joined, float64(t.WallMS)/1000)
 			}
 		}

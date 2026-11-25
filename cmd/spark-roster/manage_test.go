@@ -25,6 +25,11 @@ type fakeHost struct {
 	available uint64
 	sudoErr   error
 	log       []string
+	// Timers and other units outside any profile, for benchmark pauses.
+	unitsActive map[string]bool
+	unitErr     map[string]error
+	// unitStuck lists units that ignore a stop request, as a hung timer would.
+	unitStuck map[string]bool
 }
 
 func newFakeHost() *fakeHost {
@@ -46,8 +51,16 @@ func (f *fakeHost) Start(_ context.Context, p profile.Profile) error {
 	f.running[p.ID] = true
 	return f.startErr[p.ID]
 }
-func (f *fakeHost) Probe(_ context.Context, p profile.Profile) error { return f.probeErr[p.ID] }
-func (f *fakeHost) Available(context.Context) (uint64, error)        { return f.available, nil }
+func (f *fakeHost) Probe(_ context.Context, p profile.Profile) error {
+	if e := f.probeErr[p.ID]; e != nil {
+		return e
+	}
+	if !f.running[p.ID] {
+		return errors.New("not serving")
+	}
+	return nil
+}
+func (f *fakeHost) Available(context.Context) (uint64, error) { return f.available, nil }
 func (f *fakeHost) Units(_ context.Context, p profile.Profile) ([]profile.UnitState, error) {
 	state := "inactive"
 	if f.running[p.ID] {
@@ -60,6 +73,34 @@ func (f *fakeHost) Units(_ context.Context, p profile.Profile) ([]profile.UnitSt
 	return out, nil
 }
 func (f *fakeHost) SudoReady(context.Context) error { return f.sudoErr }
+
+// Unit control for benchmark pauses. Units are "active" until stopped.
+func (f *fakeHost) UnitActive(_ context.Context, unit string) (bool, error) {
+	if f.unitsActive == nil {
+		return false, nil
+	}
+	return f.unitsActive[unit], nil
+}
+func (f *fakeHost) ControlUnit(_ context.Context, action, unit string) error {
+	f.log = append(f.log, action+" "+unit)
+	if e := f.unitErr[action+" "+unit]; e != nil {
+		return e
+	}
+	if f.unitsActive == nil {
+		f.unitsActive = map[string]bool{}
+	}
+	if action == "stop" && f.unitStuck[unit] {
+		return nil
+	}
+	f.unitsActive[unit] = action == "start"
+	return nil
+}
+func (f *fakeHost) ConfirmInactive(_ context.Context, unit string) error {
+	if f.unitsActive != nil && f.unitsActive[unit] {
+		return errors.New(unit + " is still active")
+	}
+	return nil
+}
 
 type fakeStager struct {
 	plan     profile.StagePlan
@@ -89,18 +130,27 @@ type fx struct {
 	portErr   error
 	lockErr   error
 	installed bool
+	euid      int
+	chowned   []string
+	// h2, when set, replaces the fake host behind the CLI. It lets a test observe calls.
+	h2 hostOps
 }
 
 func newFx(t *testing.T) *fx {
 	dir := t.TempDir()
-	return &fx{t: t, h: newFakeHost(), s: &fakeStager{plan: profile.StagePlan{Enough: true}}, dir: dir, profiles: filepath.Join(dir, "profiles")}
+	return &fx{t: t, h: newFakeHost(), s: &fakeStager{plan: profile.StagePlan{Enough: true}}, dir: dir, profiles: filepath.Join(dir, "profiles"), euid: 1000}
 }
 
 func (x *fx) env() env {
 	return env{
 		home: x.dir, getenv: func(string) string { return "" }, interactive: x.interact, stdin: strings.NewReader(x.stdin),
 		user: "operator", group: "operator", goos: "linux", goarch: "arm64",
-		backend:  func(paths) (hostOps, stager) { return x.h, x.s },
+		backend: func(paths) (hostOps, stager) {
+			if x.h2 != nil {
+				return x.h2, x.s
+			}
+			return x.h, x.s
+		},
 		portFree: func(uint16) error { return x.portErr },
 		lock: func(string) (func(), error) {
 			if x.lockErr != nil {
@@ -112,6 +162,20 @@ func (x *fx) env() env {
 		output:        func(context.Context, string, ...string) (string, error) { return "ok", nil },
 		available:     func(string) (uint64, error) { return 500 << 30, nil },
 		memory:        func(context.Context) (uint64, error) { return 100 << 30, nil },
+		euid:          x.euid,
+		exe:           func() (string, error) { return "/home/operator/bin/spark-roster", nil },
+		sha256:        func(string) (string, error) { return strings.Repeat("ab", 32), nil },
+		now:           func() time.Time { return time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC) },
+		chown: func(path string, uid, gid int) error {
+			x.chowned = append(x.chowned, path)
+			return nil
+		},
+		lookupUser: func(name string) (OperatorInfo, error) {
+			if name != "operator" {
+				return OperatorInfo{}, errors.New("unknown user")
+			}
+			return OperatorInfo{Home: x.dir, UID: 1000, GID: 1000}, nil
+		},
 	}
 }
 

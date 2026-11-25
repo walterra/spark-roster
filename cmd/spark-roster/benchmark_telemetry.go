@@ -237,7 +237,12 @@ func sendBenchOTLP(c *http.Client, endpoint, signal string, e benchEvent) error 
 }
 
 func startBenchTelemetry(ctx context.Context, kind string, started time.Time, out io.Writer, required bool) (context.Context, func(), error) {
-	t, err := openBenchTrace(filepath.Join(benchmarkState, "events"), kind, started, benchOTLP)
+	return startBenchTelemetryIn(ctx, filepath.Join(benchmarkState, "events"), kind, started, out, required)
+}
+
+// startBenchTelemetryIn is startBenchTelemetry with the trace directory chosen by the caller.
+func startBenchTelemetryIn(ctx context.Context, dir, kind string, started time.Time, out io.Writer, required bool) (context.Context, func(), error) {
+	t, err := openBenchTrace(dir, kind, started, benchOTLP)
 	if err != nil {
 		if required {
 			return ctx, func() {}, err

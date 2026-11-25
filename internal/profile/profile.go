@@ -126,6 +126,9 @@ type Profile struct {
 	Launch        *Launch    `json:"launch,omitempty"`
 	Serving       Serving    `json:"serving"`
 	Memory        Memory     `json:"memory"`
+	// PauseDuringBenchmark names units, usually a health-check timer, that a
+	// benchmark stops while it times requests and starts again afterwards.
+	PauseDuringBenchmark []string `json:"pause_during_benchmark,omitempty"`
 	// Concurrency and ContextTokens describe the served configuration for the
 	// planner and for reports. They do not change how the service launches.
 	Concurrency   int `json:"concurrency,omitempty"`
@@ -194,6 +197,11 @@ func (p Profile) Validate() error {
 		}
 	}
 	s := p.Serving
+	for _, u := range p.PauseDuringBenchmark {
+		if !host.ValidUnit(u) {
+			return fail("pause_during_benchmark has an invalid unit %q", u)
+		}
+	}
 	if p.Concurrency < 0 || p.ContextTokens < 0 {
 		return fail("concurrency and context_tokens must not be negative")
 	}

@@ -56,6 +56,9 @@ type hostOps interface {
 	profile.Backend
 	Units(context.Context, profile.Profile) ([]profile.UnitState, error)
 	SudoReady(context.Context) error
+	UnitActive(ctx context.Context, unit string) (bool, error)
+	ControlUnit(ctx context.Context, action, unit string) error
+	ConfirmInactive(ctx context.Context, unit string) error
 }
 
 type stager interface {
@@ -80,22 +83,37 @@ type env struct {
 	output        func(ctx context.Context, name string, args ...string) (string, error)
 	available     func(path string) (uint64, error)
 	memory        func(ctx context.Context) (uint64, error)
+	// Used by the benchmark commands.
+	euid   int
+	exe    func() (string, error)
+	sha256 func(path string) (string, error)
+	now    func() time.Time
+	// chown hands a file the worker wrote as root to the operator it acts for.
+	chown func(path string, uid, gid int) error
+	// lookupUser resolves the operator named on a worker's command line.
+	lookupUser func(name string) (OperatorInfo, error)
 }
 
 type app struct {
 	env
 	paths    paths
 	profiles map[string]profile.Profile // expanded
+	raw      map[string]profile.Profile // as written, for reports
 	source   map[string]string
-	host     hostOps
-	stager   stager
-	journal  profile.Journal
-	json     bool
-	out, err io.Writer
+	// chownPath is set when a root worker acts for an operator.
+	chownPath func(path string) error
+	host      hostOps
+	stager    stager
+	journal   profile.Journal
+	json      bool
+	out, err  io.Writer
 }
 
 // manage runs the profile commands. It returns false when args[0] is not one.
 func manage(ctx context.Context, args []string, out, diag io.Writer, e env) (int, bool) {
+	if code, ok := manageBenchmark(ctx, args, out, diag, e); ok {
+		return code, true
+	}
 	switch args[0] {
 	case "list", "status", "doctor", "stage", "switch", "stop", "recover", "version", "--version":
 	default:
@@ -113,7 +131,8 @@ func manage(ctx context.Context, args []string, out, diag io.Writer, e env) (int
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
 	profilesDir := fs.String("profiles", "", "directory of site profiles (default $SPARK_ROSTER_PROFILES or ~/.config/spark-roster/profiles)")
 	dataDir := fs.String("data", "", "directory for weights, builds and state (default $SPARK_ROSTER_DATA or ~/.local/share/spark-roster)")
-	flagArgs, positional := splitArgs(args[1:])
+	operator := fs.String("operator", "", "act for this user (used by the root-run recovery hook)")
+	flagArgs, positional := splitArgs(args[1:], "profiles", "data", "operator")
 	if err := fs.Parse(flagArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitOK, true
@@ -129,15 +148,14 @@ func manage(ctx context.Context, args []string, out, diag io.Writer, e env) (int
 		fmt.Fprintf(diag, "error: --dry-run and --yes do not apply to %s\n", name)
 		return exitUsage, true
 	}
-	p := paths{Home: e.home}
-	p.Data = firstNonEmpty(*dataDir, e.getenv("SPARK_ROSTER_DATA"), filepath.Join(e.home, ".local", "share", "spark-roster"))
-	p.Profiles = firstNonEmpty(*profilesDir, e.getenv("SPARK_ROSTER_PROFILES"), filepath.Join(e.home, ".config", "spark-roster", "profiles"))
-	p.HFCache = firstNonEmpty(e.getenv("HF_HUB_CACHE"), joinIf(e.getenv("HF_HOME"), "hub"), filepath.Join(e.home, ".cache", "huggingface", "hub"))
-	a := &app{env: e, paths: p, json: *asJSON, out: out, err: diag, journal: profile.Journal{Path: filepath.Join(p.Data, "state.json")}}
-	if code := a.load(); code != exitOK {
+	if *operator != "" && name != "recover" {
+		fmt.Fprintln(diag, "error: --operator applies only to recover, run by the benchmark's systemd recovery hook")
+		return exitUsage, true
+	}
+	a, code := buildAppFor(e, *asJSON, *profilesDir, *dataDir, *operator, out, diag)
+	if code != exitOK {
 		return code, true
 	}
-	a.host, a.stager = e.backend(p)
 	switch name {
 	case "list":
 		return a.list(), true
@@ -156,14 +174,20 @@ func manage(ctx context.Context, args []string, out, diag io.Writer, e env) (int
 	}
 }
 
-// splitArgs lets flags appear before or after the profile id.
-func splitArgs(args []string) (flags, positional []string) {
+// splitArgs lets flags appear before or after the profile id. valueFlags names
+// the flags that take a separate value ("--data DIR"), so the value is not
+// mistaken for a profile id.
+func splitArgs(args []string, valueFlags ...string) (flags, positional []string) {
+	takesValue := map[string]bool{}
+	for _, f := range valueFlags {
+		takesValue["--"+f], takesValue["-"+f] = true, true
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case strings.HasPrefix(a, "-") && a != "-":
 			flags = append(flags, a)
-			if (a == "--profiles" || a == "--data" || a == "-profiles" || a == "-data") && i+1 < len(args) {
+			if takesValue[a] && i+1 < len(args) {
 				i++
 				flags = append(flags, args[i])
 			}
@@ -172,6 +196,45 @@ func splitArgs(args []string) (flags, positional []string) {
 		}
 	}
 	return
+}
+
+// buildAppFor resolves the directories, loads and expands the profiles and
+// connects the host. Every command that touches profiles starts here. With an
+// operator it acts for that user: paths come from their home, not root's, and
+// files it writes are handed to them.
+func buildAppFor(e env, asJSON bool, profilesDir, dataDir, operator string, out, diag io.Writer) (*app, int) {
+	var op *OperatorInfo
+	if operator != "" {
+		if e.lookupUser == nil {
+			fmt.Fprintln(diag, "error: cannot resolve the operator on this platform")
+			return nil, exitError
+		}
+		info, err := e.lookupUser(operator)
+		if err != nil {
+			fmt.Fprintf(diag, "error: operator %q: %v\n", operator, err)
+			return nil, exitUsage
+		}
+		if info.UID == 0 || !filepath.IsAbs(info.Home) {
+			fmt.Fprintf(diag, "error: operator %q must be a regular user with an absolute home directory\n", operator)
+			return nil, exitUsage
+		}
+		op = &info
+		e.home, e.user = info.Home, operator
+	}
+	p := paths{Home: e.home}
+	p.Data = firstNonEmpty(dataDir, e.getenv("SPARK_ROSTER_DATA"), filepath.Join(e.home, ".local", "share", "spark-roster"))
+	p.Profiles = firstNonEmpty(profilesDir, e.getenv("SPARK_ROSTER_PROFILES"), filepath.Join(e.home, ".config", "spark-roster", "profiles"))
+	p.HFCache = firstNonEmpty(e.getenv("HF_HUB_CACHE"), joinIf(e.getenv("HF_HOME"), "hub"), filepath.Join(e.home, ".cache", "huggingface", "hub"))
+	a := &app{env: e, paths: p, json: asJSON, out: out, err: diag, journal: profile.Journal{Path: filepath.Join(p.Data, "state.json")}}
+	if op != nil && e.chown != nil {
+		a.chownPath = func(path string) error { return e.chown(path, op.UID, op.GID) }
+		a.journal.Chown = a.chownPath
+	}
+	if code := a.load(); code != exitOK {
+		return nil, code
+	}
+	a.host, a.stager = e.backend(p)
+	return a, exitOK
 }
 
 func firstNonEmpty(v ...string) string {
@@ -210,7 +273,7 @@ func (a *app) load() int {
 	}
 	builtin, _ := profile.Builtin()
 	vars := profile.Vars{Home: a.paths.Home, Data: a.paths.Data, HFCache: a.paths.HFCache}
-	a.profiles, a.source = map[string]profile.Profile{}, map[string]string{}
+	a.profiles, a.raw, a.source = map[string]profile.Profile{}, map[string]profile.Profile{}, map[string]string{}
 	for id, p := range set {
 		q, err := profile.Expand(p, vars)
 		if err == nil {
@@ -220,7 +283,7 @@ func (a *app) load() int {
 			fmt.Fprintf(a.err, "error: profile %s: %v\n", id, err)
 			return exitError
 		}
-		a.profiles[id] = q
+		a.profiles[id], a.raw[id] = q, p
 		a.source[id] = "site"
 		if _, ok := builtin[id]; ok {
 			a.source[id] = "built-in"
@@ -302,6 +365,7 @@ type statusDoc struct {
 	Active         string      `json:"active,omitempty"`
 	Running        []string    `json:"running"`
 	Unsettled      string      `json:"unsettled,omitempty"`
+	Benchmark      string      `json:"benchmark,omitempty"`
 	AvailableBytes uint64      `json:"available_bytes,omitempty"`
 	Profiles       []statusRow `json:"profiles"`
 	Next           []string    `json:"next,omitempty"`
@@ -313,6 +377,9 @@ func (a *app) observe(ctx context.Context) (statusDoc, error) {
 		return statusDoc{}, err
 	}
 	doc := statusDoc{SchemaVersion: 1, Kind: "status", Active: st.Active, Running: []string{}}
+	if st.Bench != nil {
+		doc.Benchmark = fmt.Sprintf("benchmark %s started %s; baseline %s", st.Bench.ID, st.Bench.StartedAt.Format(time.RFC3339), orNone(st.Bench.Baseline))
+	}
 	if st.Switching != nil || st.Unresolved != "" {
 		doc.Unsettled = "an earlier switch was not settled"
 		if st.Switching != nil {
@@ -379,6 +446,9 @@ func (a *app) status(ctx context.Context) int {
 	if doc.AvailableBytes > 0 {
 		fmt.Fprintf(a.out, "\nHost memory available: %.1f GiB\n", float64(doc.AvailableBytes)/(1<<30))
 	}
+	if doc.Benchmark != "" {
+		fmt.Fprintf(a.out, "\nbenchmark: %s\n", doc.Benchmark)
+	}
 	if doc.Unsettled != "" {
 		fmt.Fprintf(a.out, "\nwarning: %s\n", doc.Unsettled)
 	}
@@ -391,25 +461,12 @@ func (a *app) status(ctx context.Context) int {
 // running returns the one profile that is running, nil when none, or an error
 // when the host and the journal disagree or several run at once.
 func (a *app) running(ctx context.Context) (*profile.Profile, error) {
-	doc, err := a.observe(ctx)
+	st, err := a.journal.Read()
 	if err != nil {
 		return nil, err
 	}
-	switch len(doc.Running) {
-	case 0:
-		if doc.Active != "" {
-			return nil, fmt.Errorf("the journal says %q is active but none of its units are running. Start it with `spark-roster switch %s`, or clear the record by running `spark-roster stop`", doc.Active, doc.Active)
-		}
-		return nil, nil
-	case 1:
-		id := doc.Running[0]
-		if doc.Active != "" && doc.Active != id {
-			return nil, fmt.Errorf("the journal says %q is active but %q is running. Stop %q yourself or run `spark-roster stop`", doc.Active, id, id)
-		}
-		p := a.profiles[id]
-		return &p, nil
-	}
-	return nil, fmt.Errorf("more than one profile is running (%s); SparkRoster will not guess which to replace. Stop all but one", strings.Join(doc.Running, ", "))
+	p, _, err := profile.Current(ctx, a.host, st, a.profiles)
+	return p, err
 }
 
 type progress struct {
@@ -491,7 +548,16 @@ func (a *app) options(from *profile.Profile, to profile.Profile) profile.Options
 	if from != nil {
 		recovery += from.Serving.ReadyTimeout.Duration
 	}
-	return profile.Options{ReserveBytes: 10 << 30, Poll: 4 * time.Second, ProbeTimeout: 8 * time.Second, RecoveryTimeout: recovery}
+	return profile.Options{ReserveBytes: 10 << 30, Poll: 4 * time.Second, ProbeTimeout: 8 * time.Second, RecoveryTimeout: recovery, Resume: a.resumeUnits}
+}
+
+// resumeUnits starts units a benchmark paused, after the baseline serves again.
+func (a *app) resumeUnits(ctx context.Context, units []string) error {
+	var errs []error
+	for _, u := range units {
+		errs = append(errs, a.host.ControlUnit(ctx, "start", u))
+	}
+	return errors.Join(errs...)
 }
 
 func (a *app) switchTo(ctx context.Context, id string, dry, yes bool) int {
@@ -641,6 +707,9 @@ func (a *app) stop(ctx context.Context, dry, yes bool) int {
 	if err == nil && (st.Switching != nil || st.Unresolved != "") {
 		err = errors.New("an earlier switch is unsettled; run recover first")
 	}
+	if err == nil && st.Bench != nil {
+		err = fmt.Errorf("a benchmark is running or was interrupted (%s); wait for it, or run recover if it died", st.Describe())
+	}
 	if err != nil {
 		doc.Outcome, doc.Error = "refused", err.Error()
 		return a.finish(doc, exitPrecondition)
@@ -710,18 +779,30 @@ func (a *app) recover(ctx context.Context, dry, yes bool) int {
 		doc.Outcome, doc.Error = "failed", err.Error()
 		return a.finish(doc, exitError)
 	}
-	if st.Switching == nil {
+	if st.Switching == nil && st.Bench == nil {
 		doc.Outcome = "nothing_to_recover"
 		if !a.json {
-			fmt.Fprintln(a.out, "no interrupted switch to recover")
+			fmt.Fprintln(a.out, "no interrupted switch or benchmark to recover")
 		}
 		return a.finish(doc, exitOK)
 	}
-	doc.From, doc.To = st.Switching.From, st.Switching.To
+	want := ""
+	switch {
+	case st.Bench != nil:
+		want = st.Bench.Baseline
+		doc.From, doc.To = st.Describe(), want
+	default:
+		want = st.Switching.From
+		doc.From, doc.To = st.Switching.From, st.Switching.To
+	}
 	if dry {
 		doc.Outcome = "dry_run"
 		if !a.json {
-			fmt.Fprintf(a.out, "Would stop %s, confirm it exited, then restore %s and wait for a generation. Nothing was changed.\n", st.Switching.To, orNone(st.Switching.From))
+			fmt.Fprintf(a.out, "Would stop every profile the interrupted work left running, confirm each exited, then restore %s and wait for a generation", orNone(want))
+			if st.Bench != nil && len(st.Bench.Paused) > 0 {
+				fmt.Fprintf(a.out, ", then start %s again", strings.Join(st.Bench.Paused, ", "))
+			}
+			fmt.Fprintln(a.out, ". Nothing was changed.")
 		}
 		return a.finish(doc, exitOK)
 	}
@@ -729,7 +810,7 @@ func (a *app) recover(ctx context.Context, dry, yes bool) int {
 		doc.Outcome, doc.Error = "refused", err.Error()
 		return a.finish(doc, exitPrecondition)
 	}
-	if !a.confirm(fmt.Sprintf("Stop %s and restore %s?", st.Switching.To, orNone(st.Switching.From)), yes) {
+	if !a.confirm(fmt.Sprintf("Stop what is running and restore %s?", orNone(want)), yes) {
 		doc.Outcome, doc.Error = "needs_confirmation", "recovery stops and starts services. Re-run with --yes"
 		return a.finish(doc, exitPrecondition)
 	}
@@ -740,12 +821,10 @@ func (a *app) recover(ctx context.Context, dry, yes bool) int {
 	}
 	defer unlock()
 	prog := &progress{a: a}
-	var fromP *profile.Profile
-	if st.Switching.From != "" {
-		p := a.profiles[st.Switching.From]
-		fromP = &p
+	o := a.options(nil, profile.Profile{})
+	if p, ok := a.profiles[want]; ok {
+		o = a.options(&p, p)
 	}
-	o := a.options(fromP, a.profiles[st.Switching.To])
 	run, cancel := context.WithTimeout(ctx, o.RecoveryTimeout+5*time.Minute)
 	defer cancel()
 	if err := profile.Recover(run, a.host, a.journal, a.profiles, o, prog.emit); err != nil {
@@ -754,7 +833,7 @@ func (a *app) recover(ctx context.Context, dry, yes bool) int {
 	}
 	doc.Outcome, doc.Events = "recovered", prog.events
 	if !a.json {
-		fmt.Fprintf(a.out, "recovered: %s is serving\n", orNone(st.Switching.From))
+		fmt.Fprintf(a.out, "recovered: %s is serving\n", orNone(want))
 	}
 	return a.finish(doc, exitOK)
 }

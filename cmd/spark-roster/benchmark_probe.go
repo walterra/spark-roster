@@ -38,8 +38,14 @@ func benchFreePort(port uint16) error {
 	return l.Close()
 }
 
+// Seams for tests. The defaults are the real measurements.
+var (
+	runSpeed    = runSpeedPairs
+	benchMemory = localMemory
+)
+
 func measureBenchProfile(ctx context.Context, res *benchResult, port uint16, model, key string, start func(context.Context) error, quality func(context.Context) error, seed string) error {
-	m, err := localMemory()
+	m, err := benchMemory()
 	if err != nil {
 		return err
 	}
@@ -56,7 +62,7 @@ func measureBenchProfile(ctx context.Context, res *benchResult, port uint16, mod
 				done <- nil
 				return
 			case <-ticker.C:
-				sample, err := localMemory()
+				sample, err := benchMemory()
 				if err != nil {
 					done <- err
 					cancel()
@@ -81,7 +87,7 @@ func measureBenchProfile(ctx context.Context, res *benchResult, port uint16, mod
 			}
 			res.SwitchReadyMS = time.Since(t).Milliseconds()
 		}
-		res.Speed = runSpeedPairs(phase, port, model, key, seed)
+		res.Speed = runSpeed(phase, port, model, key, seed)
 		if err := phase.Err(); err != nil {
 			return err
 		}

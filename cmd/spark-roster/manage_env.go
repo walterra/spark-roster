@@ -5,15 +5,20 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/walterra/spark-roster/internal/host"
 	"github.com/walterra/spark-roster/internal/profile"
@@ -47,6 +52,28 @@ func realEnv() (env, error) {
 			return h, s
 		},
 		portFree: portFree, lock: lockDir, unitInstalled: unitInstalled,
+		euid: os.Geteuid(), now: time.Now,
+		exe: func() (string, error) {
+			p, err := os.Executable()
+			if err != nil {
+				return "", err
+			}
+			return filepath.EvalSymlinks(p)
+		},
+		sha256: fileSHA256,
+		chown:  os.Lchown,
+		lookupUser: func(name string) (OperatorInfo, error) {
+			u, err := user.Lookup(name)
+			if err != nil {
+				return OperatorInfo{}, err
+			}
+			uid, e1 := strconv.Atoi(u.Uid)
+			gid, e2 := strconv.Atoi(u.Gid)
+			if e1 != nil || e2 != nil {
+				return OperatorInfo{}, fmt.Errorf("unexpected uid or gid for %s", name)
+			}
+			return OperatorInfo{Home: u.HomeDir, UID: uid, GID: gid}, nil
+		},
 		output: func(ctx context.Context, name string, args ...string) (string, error) {
 			out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 			return strings.TrimSpace(string(out)), err
@@ -125,4 +152,17 @@ func unitInstalled(name, rendered string) (bool, error) {
 		return false, err
 	}
 	return bytes.Equal(b, []byte(rendered)), nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
