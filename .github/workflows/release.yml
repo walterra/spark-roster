@@ -1,0 +1,38 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - run: go vet ./... && go test -race -count=1 ./...
+      - name: build twice and compare
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/a dist/b
+          for d in a b; do
+            GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -buildvcs=false \
+              -ldflags "-X main.version=${TAG}" -o "dist/${d}/spark-roster" ./cmd/spark-roster
+          done
+          cmp dist/a/spark-roster dist/b/spark-roster
+          cp dist/a/spark-roster "dist/spark-roster_${TAG}_linux_arm64"
+          (cd dist && sha256sum "spark-roster_${TAG}_linux_arm64" > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes \
+            "dist/spark-roster_${TAG}_linux_arm64" dist/SHA256SUMS

@@ -728,3 +728,13 @@ func TestStatusSurvivesAnUnresolvedJournalWithoutAPendingSwitch(t *testing.T) {
 		t.Fatalf("%d %v", code, got)
 	}
 }
+
+func TestHelpWorksForEveryManagedCommandWithoutAMachine(t *testing.T) {
+	for _, args := range [][]string{{"list", "--help"}, {"switch", "-h"}, {"stage", "x", "--help"}, {"doctor", "--help"}, {"recover", "-help"}, {"benchmark", "launch", "--help"}, {"benchmark", "compare", "-h"}} {
+		var out, diag bytes.Buffer
+		code, ok := runManage(args, &out, &diag)
+		if !ok || code != exitOK || !strings.Contains(out.String(), "Exit codes:") || diag.Len() != 0 {
+			t.Errorf("%v: handled=%v code=%d out=%q diag=%q", args, ok, code, out.String(), diag.String())
+		}
+	}
+}

@@ -22,6 +22,13 @@ func runManage(args []string, out, diag io.Writer) (int, bool) {
 		fmt.Fprintln(out, versionString())
 		return exitOK, true
 	}
+	// Help needs no machine, so it works on a laptop and before anything is installed.
+	for _, a := range args[1:] {
+		if a == "--help" || a == "-h" || a == "-help" {
+			fmt.Fprint(out, manageUsage)
+			return exitOK, true
+		}
+	}
 	e, err := realEnv()
 	if err != nil {
 		// list needs no machine access, so it still works off-device.

@@ -236,7 +236,7 @@ func TestStageFailsWhenBuildLeavesNoOutput(t *testing.T) {
 
 func TestInstallUnitPrintsExactCommandsAndRunsNoSudo(t *testing.T) {
 	dir := t.TempDir()
-	path, cmds, err := InstallUnit(launched("process"), "walterra", "walterra", dir)
+	path, cmds, err := InstallUnit(launched("process"), "operator", "operator", dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestInstallUnitPrintsExactCommandsAndRunsNoSudo(t *testing.T) {
 	if st, _ := os.Stat(path); st.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", st.Mode())
 	}
-	if _, _, err := InstallUnit(prof("adopted", 1), "walterra", "walterra", dir); err == nil {
+	if _, _, err := InstallUnit(prof("adopted", 1), "operator", "operator", dir); err == nil {
 		t.Fatal("adopted profile produced a unit")
 	}
 }

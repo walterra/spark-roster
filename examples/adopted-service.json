@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "kind": "profile",
+  "id": "adopted-service",
+  "title": "An existing service, adopted without changing it",
+  "concurrency": 8,
+  "context_tokens": 262144,
+  "artifacts": [
+    {
+      "kind": "huggingface",
+      "name": "RadixArk/Qwen3.8-27B-NVFP4",
+      "revision": "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854",
+      "files": [
+        {
+          "path": ".gitattributes",
+          "bytes": 1570
+        },
+        {
+          "path": ".quant_summary.txt",
+          "bytes": 314291
+        },
+        {
+          "path": "LICENSE",
+          "bytes": 11544
+        },
+        {
+          "path": "README.md",
+          "bytes": 4382
+        },
+        {
+          "path": "chat_template.jinja",
+          "bytes": 8952
+        },
+        {
+          "path": "config.json",
+          "bytes": 73003
+        },
+        {
+          "path": "conversion-manifest.json",
+          "bytes": 23587
+        },
+        {
+          "path": "generation_config.json",
+          "bytes": 214
+        },
+        {
+          "path": "hf_quant_config.json",
+          "bytes": 53749
+        },
+        {
+          "path": "merges.txt",
+          "bytes": 3353259
+        },
+        {
+          "path": "model-00001-of-00003.safetensors",
+          "bytes": 9965652544,
+          "sha256": "fbcdb5ba1cdda462b5f38592d071e772c4d398afea61a0aa9188b32d1a239a79"
+        },
+        {
+          "path": "model-00002-of-00003.safetensors",
+          "bytes": 9985757064,
+          "sha256": "db6146a5464fb0a891181b93c81593f0ca65c602eb14120a1c2b1b09bca11f85"
+        },
+        {
+          "path": "model-00003-of-00003.safetensors",
+          "bytes": 1970287672,
+          "sha256": "d3cfb92742e30c8b46564665791dbe0a86ed64cfc02b1275081530793c0c9581"
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "bytes": 214866
+        },
+        {
+          "path": "preprocessor_config.json",
+          "bytes": 390
+        },
+        {
+          "path": "qualification-criteria.json",
+          "bytes": 1145
+        },
+        {
+          "path": "qualification.json",
+          "bytes": 2717
+        },
+        {
+          "path": "tensor-audit.json",
+          "bytes": 539
+        },
+        {
+          "path": "tokenizer.json",
+          "bytes": 12809320,
+          "sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3"
+        },
+        {
+          "path": "tokenizer_config.json",
+          "bytes": 1121
+        },
+        {
+          "path": "video_preprocessor_config.json",
+          "bytes": 385
+        },
+        {
+          "path": "vocab.json",
+          "bytes": 6722759
+        }
+      ],
+      "role": "model"
+    },
+    {
+      "kind": "huggingface",
+      "name": "maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal",
+      "revision": "bd7a934213c47a9e7ef69eef36bb3325f47fd1f1",
+      "files": [
+        {
+          "path": ".gitattributes",
+          "bytes": 1581
+        },
+        {
+          "path": "README.incoai-original.md",
+          "bytes": 5399
+        },
+        {
+          "path": "README.md",
+          "bytes": 7576
+        },
+        {
+          "path": "config.json",
+          "bytes": 2617
+        },
+        {
+          "path": "hf_quant_config.json",
+          "bytes": 773
+        },
+        {
+          "path": "model.safetensors",
+          "bytes": 1550153248,
+          "sha256": "2228b9b22e93a88d84556419c879448ab6c490ae65c4c0b166f4962190ddbf26"
+        }
+      ],
+      "role": "drafter"
+    }
+  ],
+  "adopt": {
+    "units": [
+      "my-engine.service",
+      "my-proxy.service"
+    ],
+    "container": "my-engine"
+  },
+  "serving": {
+    "port": 30001,
+    "model": "my-model",
+    "key_file": "{home}/.config/my-service/api-key",
+    "ready_timeout": "20m"
+  },
+  "memory": {
+    "start_min_available_bytes": 68719476736,
+    "evidence": "estimated",
+    "recorded_at": "2026-11-24T00:00:00Z",
+    "note": "Replace with your own floor and where it came from. An estimate stays labelled 'estimated' until you have a measured peak for this exact configuration."
+  },
+  "pause_during_benchmark": [
+    "my-canary.timer"
+  ]
+}

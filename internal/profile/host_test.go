@@ -29,12 +29,12 @@ func TestRenderUnitDocker(t *testing.T) {
 	p := launched("docker")
 	p.Launch.MemoryLimit = "100g"
 	p.Launch.Env = map[string]string{"B": "2", "A": "1"}
-	u, err := RenderUnit(p, "walterra", "walterra")
+	u, err := RenderUnit(p, "operator", "operator")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"User=walterra", "Restart=no", "Requires=docker.service",
+		"User=operator", "Restart=no", "Requires=docker.service",
 		`ExecStartPre=-/usr/bin/docker rm -f spark-roster-pi-q8`,
 		`ExecStop=-/usr/bin/docker stop -t 20 spark-roster-pi-q8`,
 		`"--memory" "100g" "--memory-swap" "100g"`,
@@ -45,14 +45,14 @@ func TestRenderUnitDocker(t *testing.T) {
 			t.Errorf("unit lacks %q:\n%s", want, u)
 		}
 	}
-	u2, _ := RenderUnit(p, "walterra", "walterra")
+	u2, _ := RenderUnit(p, "operator", "operator")
 	if u != u2 {
 		t.Fatal("rendering is not deterministic")
 	}
 }
 
 func TestRenderUnitProcess(t *testing.T) {
-	u, err := RenderUnit(launched("process"), "walterra", "walterra")
+	u, err := RenderUnit(launched("process"), "operator", "operator")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestRenderUnitProcess(t *testing.T) {
 func TestRenderUnitEscapesSystemdExpansionAndQuotes(t *testing.T) {
 	p := launched("process")
 	p.Launch.Args = []string{`50%`, `$HOME`, `a "b" c`, `back\slash`}
-	u, err := RenderUnit(p, "walterra", "walterra")
+	u, err := RenderUnit(p, "operator", "operator")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestRenderUnitEscapesSystemdExpansionAndQuotes(t *testing.T) {
 func TestRenderUnitRefusesInjectionAndBadInputs(t *testing.T) {
 	p := launched("process")
 	p.Launch.Args = []string{"ok\nExecStartPost=/bin/evil"}
-	if _, err := RenderUnit(p, "walterra", "walterra"); err == nil {
+	if _, err := RenderUnit(p, "operator", "operator"); err == nil {
 		t.Fatal("newline in an argument accepted")
 	}
 	if _, err := RenderUnit(launched("process"), "root", "root"); err == nil {
