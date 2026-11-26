@@ -27,6 +27,7 @@ Everything has `--json` output, documented exit codes and `--dry-run`, so script
 ## Requirements
 
 - A GB10 Spark running Linux ARM64 with the NVIDIA driver, Docker (your user in the `docker` group) and systemd.
+- To build from source: Go 1.23 or newer. Ubuntu 24.04's own `golang-go` is 1.22; [Install](#install) shows the one-line fix. A release binary needs no Go.
 - Enough free disk. The three built-in profiles download about 72 GB of files and pull about 32 GB of images (compressed), plus a CUDA llama.cpp build. `spark-roster stage` refuses to start a download that does not fit, with a 20 GiB reserve.
 - `sudo` for `systemctl start|stop`. SparkRoster never runs sudo silently: it asks you to run `sudo -v` first, and prints exact commands for the steps it will not run itself.
 - For Pi Q8: the CUDA toolkit (`nvcc`; set `CUDACXX` if it is not in `/usr/local/cuda/bin`) and `cmake`, `git`, `curl`.
@@ -45,18 +46,31 @@ install -m 0755 "spark-roster_${tag}_linux_arm64" ~/.local/bin/spark-roster
 spark-roster version
 ```
 
-Or build from source with Go 1.23 or newer. The build is reproducible (the release workflow builds twice and compares):
+Or build from source. This needs **Go 1.23 or newer**, and the Go that Ubuntu 24.04 ships (`golang-go`, 1.22) is too old: its `go build` stops with `go.mod requires go >= 1.23.0`. Check first:
 
 ```bash
-# install go
-sudo apt  install golang-go
-
-# clone repo
-git clone https://github.com/walterra/spark-roster && cd spark-roster
-
-# build spark-roster
-CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-X main.version=dev" -o ~/.local/bin/spark-roster ./cmd/spark-roster
+go version
 ```
+
+If it prints 1.23 or newer, skip to the build. Otherwise you do not need to install anything: Go 1.21 and later fetch the toolchain that `go.mod` asks for, from `proxy.golang.org`, verified against the Go checksum database. This is the default (`GOTOOLCHAIN=auto`). It needs no sudo and changes nothing outside your home directory (it caches under `~/go/pkg/mod`). On a GX10 with Go 1.22.2, running `go version` inside the clone printed `go1.23.0` after a one-time download of about 70 MB. To pin a newer toolchain, set it explicitly:
+
+```bash
+export GOTOOLCHAIN=go1.23.12
+go version
+```
+
+If your network blocks the download, Ubuntu 24.04 also offers `golang-1.23-go`; install it and call `/usr/lib/go-1.23/bin/go`. That route has not been tried here. To remove the downloaded toolchains: `rm -rf ~/go/pkg/mod/golang.org/toolchain@*`.
+
+Then clone and build. The build is reproducible (the release workflow builds twice and compares):
+
+```bash
+git clone https://github.com/walterra/spark-roster
+cd spark-roster
+CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-X main.version=dev" -o ~/.local/bin/spark-roster ./cmd/spark-roster
+spark-roster version
+```
+
+Run `go vet ./... && go test ./...` first if you want to check your build. On a GX10 with Go 1.23.12 both pass (about 10 seconds). Make sure `~/.local/bin` is on your `PATH`.
 
 `list`, `plan`, `memory` and `storage` also run on a Mac or x86 laptop. Starting and stopping needs the Spark.
 
@@ -223,9 +237,10 @@ SparkRoster does not change the GPU clock cap or other host settings, and it lea
 
 Be honest about what has run:
 
-- **Run on a real GX10:** staging and switching of Pi Q8 and Inkling through earlier fixed-profile commands (the same pins and flags the built-in profiles use); the three-profile benchmark and its restore; the benchmark relay, selftest and failure reports.
-- **Tested against fakes only:** the profile engine, `stage`, `switch`, `stop`, `recover`, `doctor` and `benchmark launch|worker|compare`. That includes real `systemctl`, `sudo`, Docker output, the generated unit under systemd, the recovery hook's quoting and the lock files.
-- **Never run:** the public Qwen profile and its image on a fresh machine. This README's first-run flow on a machine that is not the author's.
+- **Run on a real GX10, earlier:** staging and switching of Pi Q8 and Inkling through the older fixed-profile commands (the same pins and flags the built-in profiles use); the three-profile benchmark and its restore; the benchmark relay, selftest and failure reports.
+- **Run on a real GX10, 2026-11-25 QA, with this CLI:** build from source on Ubuntu 24.04 with Go 1.23.12, where `go vet` and the full test suite pass on Linux ARM64. `list` and `status` against real systemd and Docker, which report the adopted Qwen deployment as running. `stage` of Pi Q8 recognizing its existing artifacts and generating the unit. systemd accepting that unit under `systemd-analyze verify`. `switch` refusing, with nothing changed, while the unit was not installed. `sudo -n` refusing over plain ssh. Quoting of the `ExecStopPost` hook measured under `systemd-run`, which found and fixed a doubled `%`. `benchmark launch` printing its block.
+- **Tested against fakes only:** the switch, stop and recover engine, `doctor`, the benchmark worker and its restore, the lock files, and starting a generated unit under systemd. The `benchmark launch` block itself has been printed on the GX10 and not yet run.
+- **Never run:** the public Qwen profile and its image on a fresh machine, and this README's first-run flow end to end on a machine that is not the author's.
 
 Until the first live runs are recorded here, treat every step above as untested on hardware, keep the commands' `--dry-run` close, and report what you find.
 

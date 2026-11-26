@@ -174,6 +174,38 @@ func TestLaunchPrintsPasteSafeScriptWithHashCeilingAndRecoveryHook(t *testing.T)
 	}
 }
 
+// Benchmarking only the baseline leaves it serving. Saying it is stopped would make an operator
+// expect downtime that never happens, and trust a restore step that has nothing to restore.
+func TestLaunchDowntimeSaysWhatReallyStops(t *testing.T) {
+	x := newFx(t)
+	stubBenchSeams(t)
+	baselineRunning(x)
+	_, out, _ := x.run("benchmark", "launch", pBase, "--gate", "--json")
+	dt := strings.Join(toStrings(decode(t, out)["downtime"]), " | ")
+	if !strings.Contains(dt, "no model downtime") || strings.Contains(dt, "is stopped while") {
+		t.Fatalf("baseline-only run: %q", dt)
+	}
+	_, out, _ = x.run("benchmark", "launch", pBase, pC1, "--json")
+	dt = strings.Join(toStrings(decode(t, out)["downtime"]), " | ")
+	if !strings.Contains(dt, pBase+" is stopped while the other profiles run") || !strings.Contains(dt, pC1+" is started and stopped") || strings.Contains(dt, "no model downtime") {
+		t.Fatalf("two-profile run: %q", dt)
+	}
+	// A running timer a profile lists is reported, because it will be stopped.
+	x.h.unitsActive = map[string]bool{"canary.timer": true}
+	if err := os.MkdirAll(x.profiles, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base, _ := profile.Builtin()
+	p := base[pC1]
+	p.ID, p.PauseDuringBenchmark = "site-ink", []string{"canary.timer"}
+	b, _ := json.Marshal(p)
+	_ = os.WriteFile(filepath.Join(x.profiles, "site-ink.json"), b, 0o600)
+	_, out, _ = x.run("benchmark", "launch", "site-ink", "--json")
+	if dt = strings.Join(toStrings(decode(t, out)["downtime"]), " | "); !strings.Contains(dt, "canary.timer is stopped during the run and started again after") {
+		t.Fatalf("paused unit not announced: %q", dt)
+	}
+}
+
 func TestLaunchRefusesWithoutChangingAnythingAndNamesTheFix(t *testing.T) {
 	cases := map[string]struct {
 		setup func(*fx)

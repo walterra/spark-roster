@@ -111,6 +111,40 @@ func TestReadmeStatesOnlyExitCodesTheBinaryUses(t *testing.T) {
 	}
 }
 
+// The README tells people which Go they need. It must match go.mod, and it must warn about the
+// Go that Ubuntu ships, which is the version that failed a real install on a GX10.
+func TestReadmeGoVersionMatchesGoModAndWarnsAboutUbuntu(t *testing.T) {
+	gomod := readRepoFile(t, "go.mod")
+	m := regexp.MustCompile(`(?m)^go (\d+\.\d+)`).FindStringSubmatch(gomod)
+	if m == nil {
+		t.Fatal("no go directive")
+	}
+	readme := readRepoFile(t, "README.md")
+	// Every place the README names a minimum Go version must name go.mod's.
+	mentions := regexp.MustCompile(`Go (\d+\.\d+) or newer`).FindAllStringSubmatch(readme, -1)
+	if len(mentions) < 2 {
+		t.Errorf("README should state the Go requirement in Requirements and in Install, found %d mention(s)", len(mentions))
+	}
+	for _, mm := range mentions {
+		if mm[1] != m[1] {
+			t.Errorf("README says Go %s or newer, go.mod requires %s", mm[1], m[1])
+		}
+	}
+	for _, want := range []string{
+		"the Go that Ubuntu 24.04 ships (`golang-go`, 1.22) is too old",
+		"go.mod requires go >= 1.23.0",
+		"`GOTOOLCHAIN=auto`",
+		"rm -rf ~/go/pkg/mod/golang.org/toolchain@*",
+	} {
+		if !strings.Contains(readme, want) {
+			t.Errorf("README lost %q from the Go install guidance", want)
+		}
+	}
+	if strings.Contains(readme, "sudo apt install golang-go") || strings.Contains(readme, "sudo apt  install golang-go") {
+		t.Error("README tells people to install the system Go, which is too old on Ubuntu 24.04")
+	}
+}
+
 func TestPiBenchSettingsInReadmeMatchTheCode(t *testing.T) {
 	readme := readRepoFile(t, "README.md")
 	settings := fmt.Sprintf("Settings for every run: Pi 1.5.0 with a %s-token window and a %s-token output cap, at most 20 inference requests and %d minutes per attempt",

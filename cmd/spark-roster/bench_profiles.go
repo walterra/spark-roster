@@ -429,13 +429,23 @@ func (a *app) benchLaunch(ctx context.Context, order []string, gate bool) int {
 	}
 	b := benchBudget(a.profiles, order, doc.Baseline, gate)
 	doc.Budget = &b
-	if doc.Baseline != "" {
-		doc.Downtime = append(doc.Downtime, doc.Baseline+" is stopped while the other profiles run and is restored at the end")
-	}
+	// The baseline is only stopped when some other profile has to run. Benchmarking the
+	// baseline alone leaves it serving and pauses only the units its profile lists.
+	others := false
 	for _, id := range order {
 		if id != doc.Baseline {
+			others = true
 			doc.Downtime = append(doc.Downtime, id+" is started and stopped during the run")
 		}
+	}
+	if doc.Baseline != "" && others {
+		doc.Downtime = append([]string{doc.Baseline + " is stopped while the other profiles run and is restored at the end"}, doc.Downtime...)
+	}
+	if !others && doc.Baseline != "" {
+		doc.Downtime = append(doc.Downtime, "no model downtime: "+doc.Baseline+" keeps serving and is measured in place")
+	}
+	if paused, perr := a.pausedUnits(ctx, order, doc.Baseline); perr == nil && len(paused) > 0 {
+		doc.Downtime = append(doc.Downtime, strings.Join(paused, ", ")+" is stopped during the run and started again after")
 	}
 	dst := "/usr/local/sbin/spark-roster-" + doc.SHA256
 	common := []string{"--operator", a.user, "--data", a.paths.Data, "--profiles", a.paths.Profiles}
