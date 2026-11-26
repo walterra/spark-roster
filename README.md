@@ -48,7 +48,13 @@ spark-roster version
 Or build from source with Go 1.23 or newer. The build is reproducible (the release workflow builds twice and compares):
 
 ```bash
+# install go
+sudo apt  install golang-go
+
+# clone repo
 git clone https://github.com/walterra/spark-roster && cd spark-roster
+
+# build spark-roster
 CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-X main.version=dev" -o ~/.local/bin/spark-roster ./cmd/spark-roster
 ```
 
@@ -80,18 +86,18 @@ Switching downtime depends on the model. Measured on a GX10 at a 262,144-token w
 
 ## The commands
 
-| Command | What it does |
-|---|---|
-| `list` | Profiles with port, context window, memory floor and where they come from |
-| `status` | Per-profile state (`running`, `stopped`, `partial`, `missing`), whether staged, the active profile, unsettled work, the next command |
-| `doctor` | Platform, user, docker, GPU, systemd, sudo, memory, disk, journal and profiles, each with a fix |
-| `stage PROFILE` | Download and verify artifacts, generate the unit. `--dry-run` reports sizes and free space |
-| `switch PROFILE` | Replace the running profile. Refuses before stopping anything if the target is unstaged, the port is busy or sudo needs a password |
-| `stop` | Stop the running profile and confirm its exit |
-| `recover` | Settle an interrupted switch or benchmark: stop everything left running, restore the baseline, start paused units |
-| `benchmark launch|worker|report FILE|compare A B` | See [Benchmarks](#benchmarks) |
-| `plan`, `snapshot`, `memory`, `storage`, `inspect`, `profile draft` | Offline planning and read-only host inspection, in [docs/planning.md](docs/planning.md) |
-| `version` | Version, commit and platform |
+| Command                                                             | What it does                                                                                                                         |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ------------ | ----------------------------- |
+| `list`                                                              | Profiles with port, context window, memory floor and where they come from                                                            |
+| `status`                                                            | Per-profile state (`running`, `stopped`, `partial`, `missing`), whether staged, the active profile, unsettled work, the next command |
+| `doctor`                                                            | Platform, user, docker, GPU, systemd, sudo, memory, disk, journal and profiles, each with a fix                                      |
+| `stage PROFILE`                                                     | Download and verify artifacts, generate the unit. `--dry-run` reports sizes and free space                                           |
+| `switch PROFILE`                                                    | Replace the running profile. Refuses before stopping anything if the target is unstaged, the port is busy or sudo needs a password   |
+| `stop`                                                              | Stop the running profile and confirm its exit                                                                                        |
+| `recover`                                                           | Settle an interrupted switch or benchmark: stop everything left running, restore the baseline, start paused units                    |
+| `benchmark launch                                                   | worker                                                                                                                               | report FILE | compare A B` | See [Benchmarks](#benchmarks) |
+| `plan`, `snapshot`, `memory`, `storage`, `inspect`, `profile draft` | Offline planning and read-only host inspection, in [docs/planning.md](docs/planning.md)                                              |
+| `version`                                                           | Version, commit and platform                                                                                                         |
 
 Flags for every command: `--json`, and `--profiles DIR` and `--data DIR` to move where site profiles and state live (defaults `~/.config/spark-roster/profiles` and `~/.local/share/spark-roster`, or `$SPARK_ROSTER_PROFILES` and `$SPARK_ROSTER_DATA`). State-changing commands also take `--dry-run` and `--yes`. Flags may come before or after the profile id.
 
@@ -99,14 +105,14 @@ Without `--yes` and without a terminal, a command that changes services refuses 
 
 ### Exit codes
 
-| Code | Meaning |
-|---|---|
-| 0 | Done |
-| 1 | The operation failed |
-| 2 | Bad arguments |
-| 3 | A precondition was not met and **nothing was changed**: not staged, port busy, sudo needs a password, unsettled earlier work, confirmation missing, an unit to install |
-| 4 | A switch failed and the previous profile was **restored and verified** |
-| 5 | Host state is unknown: a restore failed or a stop was not confirmed. Run `spark-roster recover` |
+| Code | Meaning                                                                                                                                                                |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0    | Done                                                                                                                                                                   |
+| 1    | The operation failed                                                                                                                                                   |
+| 2    | Bad arguments                                                                                                                                                          |
+| 3    | A precondition was not met and **nothing was changed**: not staged, port busy, sudo needs a password, unsettled earlier work, confirmation missing, an unit to install |
+| 4    | A switch failed and the previous profile was **restored and verified**                                                                                                 |
+| 5    | Host state is unknown: a restore failed or a stop was not confirmed. Run `spark-roster recover`                                                                        |
 
 ## Using it from a script or an agent
 
@@ -201,17 +207,17 @@ SparkRoster does not change the GPU clock cap or other host settings, and it lea
 
 ## Troubleshooting
 
-| Symptom | Fix |
-|---|---|
-| `switch` exits 3: "not staged" | `spark-roster stage PROFILE`, then install the unit it prints |
-| exit 3: "sudo needs a password" | run `sudo -v` in the same terminal and retry |
-| exit 3: "port N is in use" | something else listens there; stop it or change the profile's port |
-| exit 3: "earlier switch is unsettled" | `spark-roster recover` |
-| exit 5 | host state unknown. Look at `status`, then `recover`. A unit that will not stop needs your hands: `journalctl -u UNIT` |
-| `status` says the journal names a profile that is not running | `spark-roster stop` clears the stale record without touching any service |
-| `stage` refuses for disk space | free space at the directory it names, or move the data directory with `--data` |
-| a profile never becomes ready | `journalctl -u spark-roster-PROFILE.service`; the switch has already restored the previous profile |
-| the built-in Qwen profile starts slower or differently than elsewhere | it uses the public image; compare with your own `adopt` profile |
+| Symptom                                                               | Fix                                                                                                                    |
+| --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `switch` exits 3: "not staged"                                        | `spark-roster stage PROFILE`, then install the unit it prints                                                          |
+| exit 3: "sudo needs a password"                                       | run `sudo -v` in the same terminal and retry                                                                           |
+| exit 3: "port N is in use"                                            | something else listens there; stop it or change the profile's port                                                     |
+| exit 3: "earlier switch is unsettled"                                 | `spark-roster recover`                                                                                                 |
+| exit 5                                                                | host state unknown. Look at `status`, then `recover`. A unit that will not stop needs your hands: `journalctl -u UNIT` |
+| `status` says the journal names a profile that is not running         | `spark-roster stop` clears the stale record without touching any service                                               |
+| `stage` refuses for disk space                                        | free space at the directory it names, or move the data directory with `--data`                                         |
+| a profile never becomes ready                                         | `journalctl -u spark-roster-PROFILE.service`; the switch has already restored the previous profile                     |
+| the built-in Qwen profile starts slower or differently than elsewhere | it uses the public image; compare with your own `adopt` profile                                                        |
 
 ## Verification status
 

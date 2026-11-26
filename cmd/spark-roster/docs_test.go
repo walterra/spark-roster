@@ -103,7 +103,8 @@ func TestReadmeCommandsAndFlagsExist(t *testing.T) {
 func TestReadmeStatesOnlyExitCodesTheBinaryUses(t *testing.T) {
 	readme := readRepoFile(t, "README.md")
 	for code, meaning := range map[int]string{exitOK: "Done", exitError: "failed", exitUsage: "Bad arguments", exitPrecondition: "nothing was changed", exitRestored: "restored and verified", exitUnsettled: "Host state is unknown"} {
-		row := regexp.MustCompile(`\| ` + string(rune('0'+code)) + ` \|([^\n]*)`).FindStringSubmatch(readme)
+		// Tolerate column padding: a formatter may align the table.
+		row := regexp.MustCompile(`(?m)^\|\s*` + string(rune('0'+code)) + `\s*\|([^\n]*)`).FindStringSubmatch(readme)
 		if row == nil || !strings.Contains(row[1], meaning) {
 			t.Errorf("exit code %d row missing or wrong in README (want %q): %v", code, meaning, row)
 		}

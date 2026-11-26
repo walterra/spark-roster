@@ -351,3 +351,26 @@ func TestHostUnitHelpersWorkForTimers(t *testing.T) {
 		t.Fatal("a missing unit reported active")
 	}
 }
+
+// Measured on a GX10 (2026-11-25): a transient property keeps %% literally, and $$ becomes $.
+// A unit file expands both. The two quoters must differ in exactly that.
+func TestQuotingDiffersBetweenUnitFilesAndTransientProperties(t *testing.T) {
+	word := `50% of $HOME "x" back\slash`
+	unit := systemdQuote(word, true)
+	transient := systemdQuote(word, false)
+	if unit != `"50%% of $$HOME \"x\" back\\slash"` {
+		t.Fatalf("unit file word %s", unit)
+	}
+	if transient != `"50% of $$HOME \"x\" back\\slash"` {
+		t.Fatalf("transient property word %s", transient)
+	}
+	if got := QuoteExec([]string{"/bin/x", "--n", "a b", "100%"}); got != `"/bin/x" "--n" "a b" "100%"` {
+		t.Fatalf("QuoteExec %s", got)
+	}
+	p := launched("process")
+	p.Launch.Args = []string{"50%"}
+	u, err := RenderUnit(p, "operator", "operator")
+	if err != nil || !strings.Contains(u, `"50%%"`) {
+		t.Fatalf("unit file must still double %%: %v\n%s", err, u)
+	}
+}
