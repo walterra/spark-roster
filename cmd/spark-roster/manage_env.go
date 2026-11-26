@@ -25,14 +25,13 @@ import (
 )
 
 func realEnv() (env, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return env{}, err
-	}
 	u, err := user.Current()
 	if err != nil {
 		return env{}, err
 	}
+	// A root-run worker under a transient systemd unit has no $HOME. It acts for the
+	// operator named on its command line and takes the home directory from there.
+	home := resolveHome(os.Getenv("HOME"), u.HomeDir)
 	g, err := user.LookupGroupId(u.Gid)
 	if err != nil {
 		return env{}, err

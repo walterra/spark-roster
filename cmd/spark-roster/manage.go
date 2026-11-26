@@ -198,6 +198,18 @@ func splitArgs(args []string, valueFlags ...string) (flags, positional []string)
 	return
 }
 
+// resolveHome picks the home directory: $HOME when it is an absolute path, otherwise
+// the account database's entry. Either can be empty. That is fine for a root worker
+// that acts for an operator, and an error for everything else (see buildAppFor).
+func resolveHome(envHome, accountHome string) string {
+	for _, h := range []string{envHome, accountHome} {
+		if filepath.IsAbs(h) {
+			return h
+		}
+	}
+	return ""
+}
+
 // buildAppFor resolves the directories, loads and expands the profiles and
 // connects the host. Every command that touches profiles starts here. With an
 // operator it acts for that user: paths come from their home, not root's, and
@@ -220,6 +232,10 @@ func buildAppFor(e env, asJSON bool, profilesDir, dataDir, operator string, out,
 		}
 		op = &info
 		e.home, e.user = info.Home, operator
+	}
+	if e.home == "" {
+		fmt.Fprintln(diag, "error: cannot find a home directory: $HOME is unset and the account has none. Set $HOME, or pass --operator USER")
+		return nil, exitUsage
 	}
 	p := paths{Home: e.home}
 	p.Data = firstNonEmpty(dataDir, e.getenv("SPARK_ROSTER_DATA"), filepath.Join(e.home, ".local", "share", "spark-roster"))
@@ -1054,7 +1070,7 @@ var _ = sort.Strings
 
 // offlineEnv serves `list` where there is no host to inspect.
 func offlineEnv() env {
-	home, _ := os.UserHomeDir()
+	home := resolveHome(os.Getenv("HOME"), "")
 	return env{home: home, getenv: os.Getenv, stdin: os.Stdin, goos: runtime.GOOS, goarch: runtime.GOARCH,
 		backend: func(paths) (hostOps, stager) { return nil, nil }}
 }

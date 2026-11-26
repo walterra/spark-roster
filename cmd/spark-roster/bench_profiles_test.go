@@ -767,3 +767,65 @@ func TestLaunchUnitCeilingAndStopTimeComeFromTheBudget(t *testing.T) {
 		t.Fatalf("printed budget differs from the one enforced: %v vs %v", bud["total"], int64(b.Total))
 	}
 }
+
+func TestResolveHomePrefersAbsoluteEnvThenAccountAndNeverGuesses(t *testing.T) {
+	for _, tc := range []struct{ env, account, want string }{
+		{"/home/a", "/home/b", "/home/a"},
+		{"", "/home/b", "/home/b"},
+		{"relative", "/home/b", "/home/b"},
+		{"", "", ""},
+		{"relative", "also/relative", ""},
+	} {
+		if got := resolveHome(tc.env, tc.account); got != tc.want {
+			t.Errorf("resolveHome(%q, %q) = %q, want %q", tc.env, tc.account, got, tc.want)
+		}
+	}
+}
+
+// Under a transient systemd unit there is no $HOME, and root's account home is not the operator's.
+// The first live run on the GX10 died with "$HOME is not defined" before doing anything, and the
+// ExecStopPost recovery hook runs the same way, so it would have died too.
+func TestWorkerAndRecoveryHookStartWithoutAHomeDirectory(t *testing.T) {
+	x := newFx(t)
+	stubBenchSeams(t)
+	baselineRunning(x)
+	e := x.env()
+	e.euid = 0
+	e.home = "" // what realEnv now returns for root under systemd with no $HOME
+	e.getenv = func(k string) string { return map[string]string{"INVOCATION_ID": "inv"}[k] }
+	var out, diag bytes.Buffer
+	code, _ := manage(context.Background(), workerArgs(x, pBase), &out, &diag, e)
+	if code != exitOK {
+		t.Fatalf("worker without $HOME: %d\n%s\n%s", code, out.String(), diag.String())
+	}
+	if x.readLatest().Restoration != "verified" {
+		t.Fatalf("%+v", x.readLatest())
+	}
+	// The recovery hook, with the same empty home and an unsettled journal to act on.
+	j := profile.Journal{Path: filepath.Join(x.dir, "data", "state.json")}
+	if err := j.StartBench(profile.BenchRecord{ID: "r2", Baseline: pBase}); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	diag.Reset()
+	code, _ = manage(context.Background(), []string{"recover", "--yes", "--operator", "operator", "--data", filepath.Join(x.dir, "data"), "--profiles", x.profiles}, &out, &diag, e)
+	if code != exitOK || x.journalState().Bench != nil {
+		t.Fatalf("recovery hook without $HOME: %d\n%s\n%s", code, out.String(), diag.String())
+	}
+}
+
+func TestACommandWithNoHomeAndNoOperatorFailsClearlyBeforeTouchingAnything(t *testing.T) {
+	x := newFx(t)
+	e := x.env()
+	e.home = ""
+	for _, args := range [][]string{{"status"}, {"switch", pBase, "--dry-run"}, {"benchmark", "launch", pBase}} {
+		var out, diag bytes.Buffer
+		code, ok := manage(context.Background(), args, &out, &diag, e)
+		if !ok || code != exitUsage || !strings.Contains(diag.String(), "$HOME is unset") || !strings.Contains(diag.String(), "--operator") {
+			t.Errorf("%v: handled=%v code=%d %q", args, ok, code, diag.String())
+		}
+	}
+	if len(x.h.log) != 0 {
+		t.Fatalf("host touched: %v", x.h.log)
+	}
+}
